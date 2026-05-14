@@ -1,8 +1,12 @@
 {{- if .Values.migrationJob.enabled -}}
-# Post-install / post-upgrade hook that runs `prisma migrate deploy` against
-# the writer database. Required because the gateway and backend both spin up
-# Prisma at startup and assume the LiteLLM schema (LiteLLM_Config,
+# Pre-install / pre-upgrade hook that runs `prisma migrate deploy` against
+# the writer database before the gateway and backend Deployments are rolled
+# out. Required because the gateway and backend both spin up Prisma at
+# startup and assume the LiteLLM schema (LiteLLM_Config,
 # LiteLLM_VerificationToken, LiteLLM_SpendLogs, ...) already exists.
+#
+# Running this pre-upgrade closes the window where new application pods would
+# otherwise serve traffic against the previous release's unmigrated schema.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -11,7 +15,7 @@ metadata:
     {{- include "litellm.commonLabels" . | nindent 4 }}
     app.kubernetes.io/component: migrations
   annotations:
-    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook: pre-install,pre-upgrade
     helm.sh/hook-delete-policy: before-hook-creation
     helm.sh/hook-weight: "0"
 spec:

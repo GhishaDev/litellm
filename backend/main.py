@@ -8,6 +8,8 @@ Run with:
     uvicorn backend.main:app --host 0.0.0.0 --port 4001
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi.routing import Mount
 
 # See gateway/main.py for why we mint IAM-signed DATABASE_URL(s) here before
@@ -34,4 +36,16 @@ def _is_backend_route(route) -> bool:
     return any(path.startswith(prefix) for prefix in BACKEND_PATH_PREFIXES)
 
 
-app.router.routes = [r for r in app.router.routes if _is_backend_route(r)]
+# See gateway/main.py for why the trim runs inside the lifespan instead of at
+# module scope.
+_proxy_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def _backend_lifespan(app_):
+    async with _proxy_lifespan(app_):
+        app_.router.routes = [r for r in app_.router.routes if _is_backend_route(r)]
+        yield
+
+
+app.router.lifespan_context = _backend_lifespan

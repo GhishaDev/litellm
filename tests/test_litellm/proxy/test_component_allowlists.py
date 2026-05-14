@@ -1,7 +1,7 @@
 """Coverage test for the gateway / backend component allowlists.
 
 The componentization scaffold splits the proxy FastAPI app into two runtime
-components by trimming the route table at import time:
+components by trimming the route table inside a wrapped lifespan context:
 
   gateway.main  -> only paths matched by gateway/routes/allowlist.py
   backend.main  -> only paths matched by backend/routes/allowlist.py
@@ -12,12 +12,20 @@ guarantees that the union of the two trimmed route sets equals the full set
 of routes on the proxy app — i.e. no endpoint is dropped on the floor.
 
 The test reproduces the same predicate that ``gateway/main.py`` and
-``backend/main.py`` use, without importing them (importing those modules
-mutates the global ``app.router.routes`` and would corrupt the snapshot).
+``backend/main.py`` use, without importing them. The component modules wrap
+the shared ``app.router.lifespan_context``; importing them in the test process
+would chain wrappers and corrupt the snapshot.
 """
 
 import os
 import sys
+
+# Importing ``litellm.proxy.proxy_server`` runs its module-level setup, which
+# reads ``DATABASE_URL`` (Prisma) and ``LITELLM_MASTER_KEY``. Tier-zero CI
+# runners don't set these. We pin throwaway values before the import so the
+# test never depends on a live database or master key.
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+os.environ.setdefault("LITELLM_MASTER_KEY", "sk-test-component-allowlist")
 
 from fastapi.routing import Mount
 

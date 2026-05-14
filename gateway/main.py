@@ -9,6 +9,8 @@ Run with:
     uvicorn gateway.main:app --host 0.0.0.0 --port 4000
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi.routing import Mount
 
 # Mint RDS IAM tokens and assemble DATABASE_URL (+ DATABASE_URL_READ_REPLICA)
@@ -39,4 +41,19 @@ def _is_gateway_route(route) -> bool:
     return any(path.startswith(prefix) for prefix in GATEWAY_PATH_PREFIXES)
 
 
-app.router.routes = [r for r in app.router.routes if _is_gateway_route(r)]
+# Wrap proxy_server's existing lifespan so the route trim runs *after* its
+# startup hooks (and any plugin code those hooks load) have had a chance to
+# register routes. A module-load filter would miss routes added during
+# startup; running inside the lifespan, after the inner __aenter__, catches
+# them while still completing before uvicorn opens the listener.
+_proxy_lifespan = app.router.lifespan_context
+
+
+@asynccontextmanager
+async def _gateway_lifespan(app_):
+    async with _proxy_lifespan(app_):
+        app_.router.routes = [r for r in app_.router.routes if _is_gateway_route(r)]
+        yield
+
+
+app.router.lifespan_context = _gateway_lifespan
