@@ -14,11 +14,20 @@ def test_has_post_call_response_headers_callbacks_ignores_empty_callbacks(
     assert ProxyLogging.has_post_call_response_headers_callbacks() is False
 
 
-def test_has_post_call_response_headers_callbacks_detects_custom_loggers(
+def test_has_post_call_response_headers_callbacks_requires_override(
     monkeypatch,
 ):
+    """A vanilla ``CustomLogger`` inherits the no-op response-headers hook;
+    the capability flag must stay False so the proxy can skip the headers
+    loop entirely.  Only callbacks that *override* the hook should flip it."""
     monkeypatch.setattr(litellm, "callbacks", [CustomLogger()])
+    assert ProxyLogging.has_post_call_response_headers_callbacks() is False
 
+    class _AddsHeaders(CustomLogger):
+        async def async_post_call_response_headers_hook(self, **kwargs):
+            return {"x-custom": "1"}
+
+    monkeypatch.setattr(litellm, "callbacks", [_AddsHeaders()])
     assert ProxyLogging.has_post_call_response_headers_callbacks() is True
 
 
@@ -74,7 +83,9 @@ def test_callback_capabilities_skips_default_custom_logger(monkeypatch):
     monkeypatch.setattr(litellm, "callbacks", [_InternalNoopHook()])
 
     caps = ProxyLogging._callback_capabilities()
-    assert caps.has_post_call_response_headers is True
+    # Subclass inherits the base no-op for every hook — every capability flag
+    # must stay False so the proxy short-circuits the corresponding loops.
+    assert caps.has_post_call_response_headers is False
     assert caps.iterator_overrides == ()
     assert caps.has_iterator_override is False
     assert caps.has_streaming_chunk_override is False

@@ -6571,13 +6571,26 @@ def _fast_serialize_simple_model_response_stream(
     if finish_reason is not None:
         choice_dict["finish_reason"] = finish_reason
 
-    payload = {
-        "id": getattr(chunk, "id"),
-        "object": getattr(chunk, "object"),
-        "created": getattr(chunk, "created"),
-        "model": getattr(chunk, "model", None),
+    # Match the canonical ``model_dump_json(exclude_none=True)`` shape — if a
+    # field is None, omit it entirely rather than emitting ``"key": null``.
+    # Strict OpenAI-compatible clients reject ``null`` for optional fields like
+    # ``model``, so diverging here would surface as a client-side regression
+    # only on the fast path. Fall back to the slow path if a required-looking
+    # top-level identifier is missing.
+    model = getattr(chunk, "model", None)
+    if model is None:
+        return None
+
+    payload: dict = {
+        "id": getattr(chunk, "id", None),
+        "object": getattr(chunk, "object", None),
+        "created": getattr(chunk, "created", None),
+        "model": model,
         "choices": [choice_dict],
     }
+    for top_level_key in ("id", "object", "created"):
+        if payload[top_level_key] is None:
+            payload.pop(top_level_key)
     return orjson.dumps(payload)
 
 

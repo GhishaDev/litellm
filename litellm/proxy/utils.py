@@ -1576,14 +1576,21 @@ class ProxyLogging:
                 resolved = callback
             if resolved is None or not isinstance(resolved, CustomLogger):
                 continue
-            has_post_call_response_headers = True
             resolved_callbacks.append(resolved)
             cls = type(resolved)
             if cls is CustomLogger:
                 continue
             if isinstance(resolved, CustomGuardrail):
                 has_guardrail = True
+            # Use the same leaf-class ``__dict__`` check as the other hook
+            # capabilities: only callbacks that actually override the hook
+            # contribute to the flag. Setting this for every ``CustomLogger``
+            # instance (the prior behaviour) forced the full
+            # ``post_call_response_headers_hook`` body to run on every request
+            # even when no registered callback customized response headers.
             cls_attrs = cls.__dict__
+            if "async_post_call_response_headers_hook" in cls_attrs:
+                has_post_call_response_headers = True
             if "async_post_call_streaming_iterator_hook" in cls_attrs:
                 has_iterator_override = True
                 iterator_overrides.append((resolved, "override"))

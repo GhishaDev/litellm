@@ -119,20 +119,20 @@ def _log_budget_lookup_failure(entity: str, error: Exception) -> None:
     )
 
 
-# Per-router cache for the answer of _is_model_cost_zero.  Constructing a
-# ModelGroupInfo via Router.get_model_group_info costs ~0.2ms per call
-# (pydantic + typing.get_type_hints) and dominates per-request auth on
-# zero-callback deployments. We invalidate when the router instance changes
-# or its model_list length changes (the common mutation surface).
-_MODEL_COST_ZERO_CACHE: LimitedSizeOrderedDict = LimitedSizeOrderedDict(max_size=2048)
+def _get_router_zero_cost_cache(llm_router: Router) -> Optional[Dict[str, bool]]:
+    """
+    Return the router's per-instance zero-cost cache, or ``None`` for objects
+    that don't expose one (e.g. ``MagicMock`` stand-ins in unit tests).
 
-
-def _model_cost_zero_cache_key(model_name: str, llm_router: Router) -> tuple:
-    return (
-        id(llm_router),
-        len(llm_router.model_list or ()),
-        model_name,
-    )
+    The cache lives on the ``Router`` instance so it:
+        * is invalidated by ``Router._invalidate_model_group_info_cache`` on
+          any model add/remove/upsert (including in-place pricing changes via
+          ``/model/update``, which go through ``upsert_deployment``);
+        * dies with the router itself — no risk of CPython reusing the
+          previous router's ``id()`` and serving its cached entries.
+    """
+    cache = getattr(llm_router, "_zero_cost_cache", None)
+    return cache if isinstance(cache, dict) else None
 
 
 def _is_model_cost_zero(
@@ -156,13 +156,15 @@ def _is_model_cost_zero(
     # Handle list of models
     model_list = [model] if isinstance(model, str) else model
 
+    zero_cost_cache = _get_router_zero_cost_cache(llm_router)
+
     for model_name in model_list:
-        cache_key = _model_cost_zero_cache_key(model_name, llm_router)
-        cached = _MODEL_COST_ZERO_CACHE.get(cache_key)
-        if cached is not None:
-            if cached is False:
-                return False
-            continue
+        if zero_cost_cache is not None:
+            cached = zero_cost_cache.get(model_name)
+            if cached is not None:
+                if cached is False:
+                    return False
+                continue
         try:
             # Use router's get_model_group_info method directly for better reliability
             model_group_info = llm_router.get_model_group_info(model_group=model_name)
@@ -173,7 +175,8 @@ def _is_model_cost_zero(
                 verbose_proxy_logger.debug(
                     f"No model group info found for {model_name}, assuming it has cost"
                 )
-                _MODEL_COST_ZERO_CACHE[cache_key] = False
+                if zero_cost_cache is not None:
+                    zero_cost_cache[model_name] = False
                 return False
 
             # Check costs for this model
@@ -186,7 +189,8 @@ def _is_model_cost_zero(
                 verbose_proxy_logger.debug(
                     f"Model {model_name} has undefined cost (input: {input_cost}, output: {output_cost}), assuming it has cost"
                 )
-                _MODEL_COST_ZERO_CACHE[cache_key] = False
+                if zero_cost_cache is not None:
+                    zero_cost_cache[model_name] = False
                 return False
 
             # If either cost is non-zero, return False
@@ -194,7 +198,8 @@ def _is_model_cost_zero(
                 verbose_proxy_logger.debug(
                     f"Model {model_name} has non-zero cost (input: {input_cost}, output: {output_cost})"
                 )
-                _MODEL_COST_ZERO_CACHE[cache_key] = False
+                if zero_cost_cache is not None:
+                    zero_cost_cache[model_name] = False
                 return False
 
             # Costs are 0 — verify this is from explicit configuration,
@@ -208,7 +213,8 @@ def _is_model_cost_zero(
                     "cost (enforce budget)",
                     safe_name,
                 )
-                _MODEL_COST_ZERO_CACHE[cache_key] = False
+                if zero_cost_cache is not None:
+                    zero_cost_cache[model_name] = False
                 return False
 
             verbose_proxy_logger.debug(
@@ -217,7 +223,8 @@ def _is_model_cost_zero(
                 input_cost,
                 output_cost,
             )
-            _MODEL_COST_ZERO_CACHE[cache_key] = True
+            if zero_cost_cache is not None:
+                zero_cost_cache[model_name] = True
 
         except Exception as e:
             # If we can't determine the cost, assume it has cost (conservative approach)
