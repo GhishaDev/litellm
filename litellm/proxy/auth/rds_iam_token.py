@@ -189,7 +189,8 @@ def init_iam_db_url_from_env() -> bool:
         IAM_TOKEN_DB_AUTH (required to enable; case-insensitive truthy).
         Writer: DATABASE_HOST, DATABASE_PORT (default 5432), DATABASE_USER,
             DATABASE_NAME, DATABASE_SCHEMA (optional).
-        Reader (optional, only if DATABASE_HOST_READ_REPLICA is set):
+        Reader (optional, only minted when DATABASE_HOST_READ_REPLICA is set
+        AND DATABASE_URL_READ_REPLICA is not already set):
             DATABASE_HOST_READ_REPLICA, DATABASE_PORT_READ_REPLICA
             (default 5432), DATABASE_USER_READ_REPLICA (defaults to
             DATABASE_USER), DATABASE_NAME_READ_REPLICA (defaults to
@@ -197,8 +198,10 @@ def init_iam_db_url_from_env() -> bool:
             DATABASE_SCHEMA).
 
     Sets:
-        DATABASE_URL and (when reader env vars are present)
-        DATABASE_URL_READ_REPLICA.
+        DATABASE_URL, and DATABASE_URL_READ_REPLICA only when reader env vars
+        are present *and* DATABASE_URL_READ_REPLICA is not already set. An
+        explicit DATABASE_URL_READ_REPLICA (e.g. a non-IAM reader, or a
+        precomputed URL) is preserved as-is.
 
     Returns:
         True if IAM auth was enabled and at least the writer URL was
@@ -230,13 +233,17 @@ def init_iam_db_url_from_env() -> bool:
         db_schema=db_schema,
     )
 
-    # Reader — optional. Only assembled when a reader host is configured;
-    # remaining fields fall back to the writer's values so callers that share
-    # one DB user / DB name across writer + reader don't have to duplicate env
-    # vars. (Reader IAM-refresh at runtime is handled in
-    # ``litellm/proxy/utils.py`` via ``parse_iam_endpoint_from_url``.)
+    # Reader — optional and opt-in. Only minted when a reader host is
+    # configured *and* DATABASE_URL_READ_REPLICA is not already set. This lets
+    # operators with a non-IAM read replica (or a precomputed URL) keep their
+    # explicit DATABASE_URL_READ_REPLICA without it being silently overwritten
+    # with an IAM-signed URL that the reader would reject. Remaining fields
+    # fall back to the writer's values so callers that share one DB user / DB
+    # name across writer + reader don't have to duplicate env vars. (Reader
+    # IAM-refresh at runtime is handled in ``litellm/proxy/utils.py`` via
+    # ``parse_iam_endpoint_from_url``.)
     reader_host = os.getenv("DATABASE_HOST_READ_REPLICA")
-    if reader_host:
+    if reader_host and not os.getenv("DATABASE_URL_READ_REPLICA"):
         reader_port = os.getenv("DATABASE_PORT_READ_REPLICA", "5432")
         reader_user = os.getenv("DATABASE_USER_READ_REPLICA", db_user)
         reader_name = os.getenv("DATABASE_NAME_READ_REPLICA", db_name)
