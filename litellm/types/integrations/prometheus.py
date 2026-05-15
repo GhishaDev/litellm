@@ -183,6 +183,7 @@ class UserAPIKeyLabelNames(Enum):
     STREAM = "stream"
     ORG_ID = "org_id"
     ORG_ALIAS = "org_alias"
+    CACHE_TTL = "cache_ttl"
 
 
 DEFINED_PROMETHEUS_METRICS = Literal[
@@ -232,6 +233,12 @@ DEFINED_PROMETHEUS_METRICS = Literal[
     "litellm_cache_hits_metric",
     "litellm_cache_misses_metric",
     "litellm_cached_tokens_metric",
+    # Provider-side prompt cache token metrics
+    # Source: standard_logging_payload.hidden_params.usage_object.prompt_tokens_details
+    # `cached_tokens`           -> normalized cache READ across Anthropic / OpenAI / DeepSeek / Gemini / Bedrock-Claude
+    # `cache_creation_tokens`   -> cache WRITE (Anthropic-only concept). Split by 5m / 1h TTL via cache_ttl label.
+    "litellm_prompt_cache_read_tokens_metric",
+    "litellm_prompt_cache_creation_tokens_metric",
     "litellm_deployment_tpm_limit",
     "litellm_deployment_rpm_limit",
     "litellm_remaining_api_key_requests_for_model",
@@ -646,6 +653,28 @@ class PrometheusMetricLabels:
     litellm_cache_misses_metric = _cache_metric_labels
     litellm_cached_tokens_metric = _cache_metric_labels
 
+    # Provider-side prompt cache token metrics labels
+    # Extend with `api_provider` so users can split anthropic / openai / bedrock / vertex.
+    _prompt_cache_token_metric_labels = [
+        UserAPIKeyLabelNames.v1_LITELLM_MODEL_NAME.value,
+        UserAPIKeyLabelNames.API_PROVIDER.value,
+        UserAPIKeyLabelNames.API_KEY_HASH.value,
+        UserAPIKeyLabelNames.API_KEY_ALIAS.value,
+        UserAPIKeyLabelNames.TEAM.value,
+        UserAPIKeyLabelNames.TEAM_ALIAS.value,
+        UserAPIKeyLabelNames.END_USER.value,
+        UserAPIKeyLabelNames.USER.value,
+        UserAPIKeyLabelNames.MODEL_ID.value,
+    ]
+
+    litellm_prompt_cache_read_tokens_metric = _prompt_cache_token_metric_labels
+
+    # cache_creation adds `cache_ttl` to distinguish ephemeral 5m vs 1h writes (Anthropic).
+    # When the provider does not surface TTL breakdown, cache_ttl="unknown".
+    litellm_prompt_cache_creation_tokens_metric = _prompt_cache_token_metric_labels + [
+        UserAPIKeyLabelNames.CACHE_TTL.value
+    ]
+
     # Metrics whose emission paths supply org context (used by get_labels)
     _org_label_metrics: ClassVar[frozenset] = frozenset(
         {
@@ -783,8 +812,9 @@ class UserAPIKeyLabelValues:
     stream: Optional[str] = None
     org_id: Optional[str] = None
     org_alias: Optional[str] = None
+    cache_ttl: Optional[str] = None
 
-    #Added for test compatibility.
+    # Added for test compatibility.
     def __init__(self, **kwargs: Any) -> None:
         """
         Match former Pydantic behavior: unknown keys are ignored; ``api_key_hash`` maps to
