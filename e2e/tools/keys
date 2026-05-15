@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""
+e2e/tools/keys — virtual-key lifecycle wrapper for the E2E proxy.
+
+Subcommands
+-----------
+  new       POST /key/generate. Echoes full response JSON including the
+            new key. Use --models / --alias / --team-id / --max-budget /
+            --duration etc.
+  info      GET /key/info?key=<key>. Returns metadata for an existing key.
+  delete    POST /key/delete with `{keys: [<key>]}`. Idempotent.
+  hash      Print the SHA-256 hash of a key (matches `hashed_api_key`
+            label seen in /metrics). No HTTP call.
+
+Why a separate tool: cases that use virtual keys need to a) mint a key,
+b) issue a request through it, c) inspect metrics labeled by its hash,
+d) clean up. Keeping this logic in one tool means cases stay short.
+
+Examples
+--------
+  e2e/tools/keys new --alias smoke-key-1 --models claude-sonnet-cache
+  e2e/tools/keys new --alias team-a-key --team-id team-a --models gpt-4o-mini-cache
+  e2e/tools/keys delete --key sk-...
+  e2e/tools/keys hash sk-...
+
+Exit codes mirror tools/call:
+  0 success, 2 non-2xx, 3 connection error, 4 misuse
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from typing import Any, Dict, List, Optional
+
+DEFAULT_PORT = int(os.environ.get("E2E_PROXY_PORT", "4011"))
+DEFAULT_HOST = os.environ.get("E2E_PROXY_HOST", "localhost")
+DEFAULT_MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-e2e-test")
+
+
+def _http(
+    method: str,
+    url: str,
+    master_key: str,
+    payload: Optional[Dict[str, Any]] = None,
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(
+        url,
+        method=method,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {master_key}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return {"status": resp.status, "body": resp.read().decode("utf-8")}
+    except urllib.error.HTTPError as e:
+        return {"status": e.code, "body": e.read().decode("utf-8", errors="replace")}
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return {"status": 0, "body": json.dumps({"connection_error": str(e)})}
+
+
+def _emit(result: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> int:
+    body = result["body"]
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        parsed = {"raw": body}
+    out: Dict[str, Any] = {"status": result["status"], "response": parsed}
+    if extra:
+        out.update(extra)
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+    if result["status"] == 0:
+        return 3
+    if not (200 <= result["status"] < 300):
+        return 2
+    return 0
+
+
+def cmd_new(args: argparse.Namespace) -> int:
+    payload: Dict[str, Any] = {}
+    if args.alias:
+        payload["key_alias"] = args.alias
+    if args.team_id:
+        payload["team_id"] = args.team_id
+    if args.models:
+        payload["models"] = args.models
+    if args.max_budget is not None:
+        payload["max_budget"] = args.max_budget
+    if args.duration:
+        payload["duration"] = args.duration
+    if args.user_id:
+        payload["user_id"] = args.user_id
+    if args.metadata:
+        payload["metadata"] = json.loads(args.metadata)
+    result = _http("POST", f"{args.proxy_url}/key/generate", args.master_key, payload)
+    return _emit(result)
+
+
+def cmd_info(args: argparse.Namespace) -> int:
+    url = f"{args.proxy_url}/key/info?key={args.key}"
+    result = _http("GET", url, args.master_key)
+    return _emit(result)
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    payload = {"keys": [args.key]}
+    result = _http("POST", f"{args.proxy_url}/key/delete", args.master_key, payload)
+    return _emit(result)
+
+
+def cmd_hash(args: argparse.Namespace) -> int:
+    """Hash a key the same way litellm does for the `hashed_api_key`
+    Prometheus label. See `litellm.proxy.utils.hash_token`."""
+    digest = hashlib.sha256(args.key.encode("utf-8")).hexdigest()
+    print(digest)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="e2e/tools/keys")
+    p.add_argument("--proxy-url", default=f"http://{DEFAULT_HOST}:{DEFAULT_PORT}")
+    p.add_argument("--master-key", default=DEFAULT_MASTER_KEY)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    p_new = sub.add_parser("new", help="POST /key/generate")
+    p_new.add_argument("--alias")
+    p_new.add_argument("--team-id")
+    p_new.add_argument(
+        "--models",
+        nargs="*",
+        help="Allowed model_name list (space-separated). Omit = all.",
+    )
+    p_new.add_argument("--max-budget", type=float)
+    p_new.add_argument(
+        "--duration",
+        help="TTL string (e.g. 30d, 1h, 2m). Useful so ephemeral test keys auto-expire.",
+    )
+    p_new.add_argument("--user-id")
+    p_new.add_argument("--metadata", help="JSON string merged into key metadata")
+    p_new.set_defaults(func=cmd_new)
+
+    p_info = sub.add_parser("info", help="GET /key/info")
+    p_info.add_argument("--key", required=True)
+    p_info.set_defaults(func=cmd_info)
+
+    p_del = sub.add_parser("delete", help="POST /key/delete (idempotent)")
+    p_del.add_argument("--key", required=True)
+    p_del.set_defaults(func=cmd_delete)
+
+    p_hash = sub.add_parser(
+        "hash", help="print sha256(key) — matches `hashed_api_key` label"
+    )
+    p_hash.add_argument("key")
+    p_hash.set_defaults(func=cmd_hash)
+
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
