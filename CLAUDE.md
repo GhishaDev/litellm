@@ -49,6 +49,38 @@ When contributing to the project, use the appropriate templates:
 - Add at least 1 test in `tests/litellm/`
 - Ensure `make test-unit` passes
 
+### Branching strategy (internal fork)
+
+This fork pins to the upstream `v1.83.10-stable` tag and ships internal
+fixes on top of it.
+
+**Branches:**
+
+| Branch | Purpose | Stays clean? |
+|---|---|---|
+| `v1.83.10-stable` (tag) | Immutable upstream pin | yes — never moves |
+| `ship/v1.83.10` | Long-term ship branch — starts at the tag, only advances via merges of internal `fix/*` PRs | yes |
+| `internal/v1.83.10-stable` | Upstream-sync working branch — may collect upstream commits via teammate / CI sync | **no** — can have hundreds of upstream commits |
+| `litellm_internal_staging` | Pure upstream tracker for `BerriAI/litellm` | tracks upstream |
+| `fix/<short-description>` | Per-bug feature branch | yes — merged into `ship/v1.83.10` via PR merge commit |
+
+**PR target:** every internal fix PR **must target `ship/v1.83.10`**, not
+`internal/v1.83.10-stable` (which has 1700+ upstream-sync commits on top
+of the tag) and not `litellm_internal_staging` (pure upstream).
+
+```bash
+# Default new fix branch from the latest ship state
+git checkout -b fix/<name> ship/v1.83.10
+
+# Open PR
+gh pr create --base ship/v1.83.10 --head fix/<name>
+```
+
+**Conflicts:** `ship/v1.83.10` only moves when a `fix/*` PR merges, so it
+stays exactly TAG + (merged fixes). Fixes never have to rebase against
+moving upstream; the upstream-sync churn lives entirely on
+`internal/v1.83.10-stable`.
+
 ## Architecture Overview
 
 LiteLLM is a unified interface for 100+ LLM providers with two main components:
