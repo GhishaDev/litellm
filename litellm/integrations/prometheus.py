@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from dataclasses import replace as dataclass_replace
 from datetime import datetime, timedelta
 from typing import (
     TYPE_CHECKING,
@@ -509,6 +510,34 @@ class PrometheusLogger(CustomLogger):
                 name="litellm_cached_tokens_metric",
                 documentation="Total tokens served from LiteLLM cache",
                 labelnames=self.get_labels_for_metric("litellm_cached_tokens_metric"),
+            )
+
+            # Provider-side prompt cache token metrics
+            # Reads litellm-normalized `prompt_tokens_details` so a single code path
+            # covers Anthropic, OpenAI, DeepSeek, Gemini, Vertex, and Bedrock-Claude.
+            self.litellm_prompt_cache_read_tokens_metric = self._counter_factory(
+                name="litellm_prompt_cache_read_tokens_metric",
+                documentation=(
+                    "Total input tokens served from provider-side prompt cache "
+                    "(Anthropic cache_read_input_tokens, OpenAI cached_tokens, "
+                    "DeepSeek prompt_cache_hit_tokens, Gemini cachedContentTokenCount)"
+                ),
+                labelnames=self.get_labels_for_metric(
+                    "litellm_prompt_cache_read_tokens_metric"
+                ),
+            )
+
+            self.litellm_prompt_cache_creation_tokens_metric = self._counter_factory(
+                name="litellm_prompt_cache_creation_tokens_metric",
+                documentation=(
+                    "Total input tokens written to provider-side prompt cache "
+                    "(Anthropic cache_creation_input_tokens). cache_ttl label "
+                    "distinguishes ephemeral 5m / 1h writes; 'unknown' when the "
+                    "provider response omits TTL breakdown."
+                ),
+                labelnames=self.get_labels_for_metric(
+                    "litellm_prompt_cache_creation_tokens_metric"
+                ),
             )
 
             # User and Team count metrics
@@ -1291,6 +1320,13 @@ class PrometheusLogger(CustomLogger):
             label_context=label_context,
         )
 
+        # provider-side prompt cache token metrics (Anthropic / OpenAI / Gemini / DeepSeek)
+        self._increment_prompt_cache_token_metrics(
+            standard_logging_payload=standard_logging_payload,  # type: ignore
+            enum_values=enum_values,
+            label_context=label_context,
+        )
+
         # increment litellm_proxy_total_requests_metric for all successful requests
         # (both streaming and non-streaming) in this single location to prevent
         # double-counting that occurs when async_post_call_success_hook also increments
@@ -1491,6 +1527,92 @@ class PrometheusLogger(CustomLogger):
                 "litellm_cache_misses_metric",
                 enum_values,
                 label_context=label_context,
+            )
+
+    def _increment_prompt_cache_token_metrics(
+        self,
+        standard_logging_payload: StandardLoggingPayload,
+        enum_values: UserAPIKeyLabelValues,
+        label_context: Optional[PrometheusLabelFactoryContext] = None,
+    ) -> None:
+        """
+        Increment provider-side prompt cache token counters.
+
+        Data source is the litellm-normalized `prompt_tokens_details` exposed
+        under `metadata.usage_object` (populated by
+        `StandardLoggingPayloadSetup.get_standard_logging_metadata` in
+        `litellm_core_utils/litellm_logging.py`). This unifies Anthropic
+        (cache_read_input_tokens, cache_creation_input_tokens), OpenAI
+        (prompt_tokens_details.cached_tokens), DeepSeek (prompt_cache_hit_tokens),
+        and Gemini (cachedContentTokenCount) into:
+
+            cached_tokens          -> cache READ
+            cache_creation_tokens  -> cache WRITE (Anthropic only)
+            cache_creation_token_details.ephemeral_5m_input_tokens / _1h_input_tokens
+                                   -> Anthropic TTL breakdown (split by cache_ttl label)
+
+        NOTE: there is also a `hidden_params.usage_object` field declared on
+        StandardLoggingHiddenParams, but it is never populated for chat
+        completions — the live data flows through `metadata.usage_object`.
+        Confirmed via E2E test against a live proxy.
+
+        Counters are only incremented for non-zero values to avoid creating
+        zero-valued time series for providers that do not surface a field
+        (mirrors the existing `litellm_cached_tokens_metric` policy).
+        """
+        metadata = standard_logging_payload.get("metadata") or {}
+        usage_object = metadata.get("usage_object") or {}
+        prompt_tokens_details = usage_object.get("prompt_tokens_details") or {}
+        if not isinstance(prompt_tokens_details, dict):
+            return
+
+        # --- READ ---
+        cache_read_tokens = prompt_tokens_details.get("cached_tokens") or 0
+        if cache_read_tokens and cache_read_tokens > 0:
+            PrometheusLogger._inc_labeled_counter(
+                self,
+                self.litellm_prompt_cache_read_tokens_metric,
+                "litellm_prompt_cache_read_tokens_metric",
+                enum_values,
+                label_context=label_context,
+                amount=float(cache_read_tokens),
+            )
+
+        # --- WRITE (Anthropic) ---
+        cache_creation_tokens = prompt_tokens_details.get("cache_creation_tokens") or 0
+        if not cache_creation_tokens or cache_creation_tokens <= 0:
+            return
+
+        ttl_details = prompt_tokens_details.get("cache_creation_token_details") or {}
+        if isinstance(ttl_details, dict) and (
+            ttl_details.get("ephemeral_5m_input_tokens") is not None
+            or ttl_details.get("ephemeral_1h_input_tokens") is not None
+        ):
+            # Provider gave a 5m/1h split — emit one series per non-zero TTL bucket.
+            # NOTE: derived enum_values requires label_context=None per
+            # prometheus_label_factory's identity check.
+            for ttl_label, amount in (
+                ("5m", ttl_details.get("ephemeral_5m_input_tokens") or 0),
+                ("1h", ttl_details.get("ephemeral_1h_input_tokens") or 0),
+            ):
+                if amount and amount > 0:
+                    PrometheusLogger._inc_labeled_counter(
+                        self,
+                        self.litellm_prompt_cache_creation_tokens_metric,
+                        "litellm_prompt_cache_creation_tokens_metric",
+                        dataclass_replace(enum_values, cache_ttl=ttl_label),
+                        label_context=None,
+                        amount=float(amount),
+                    )
+        else:
+            # Older Anthropic API (or other provider) — no TTL breakdown.
+            PrometheusLogger._inc_labeled_counter(
+                self,
+                self.litellm_prompt_cache_creation_tokens_metric,
+                "litellm_prompt_cache_creation_tokens_metric",
+                dataclass_replace(enum_values, cache_ttl="unknown"),
+                label_context=None,
+                amount=float(cache_creation_tokens),
             )
 
     async def _increment_remaining_budget_metrics(
