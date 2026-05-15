@@ -5135,15 +5135,25 @@ class StandardLoggingPayloadSetup:
                     tb_lines[:MAXIMUM_TRACEBACK_LINES_TO_LOG]
                 )  # Limit to first 100 lines
 
-        # Get additional error details
-        error_message = str(original_exception)
+        # Get additional error details.
+        # Prefer the `.message` attribute (set by ProxyException and every
+        # litellm.exceptions.* class) over str(exc). ProxyException does not
+        # call super().__init__() nor define __str__, so str() on it returns
+        # an empty string — which used to silently strip the human-readable
+        # message from spend_logs.metadata.error_information and made
+        # dashboard "LLM Failure" rows untriagable. See e2e/cases/11.
+        message_attr = getattr(original_exception, "message", None)
+        if message_attr:
+            error_message = str(message_attr)
+        else:
+            error_message = str(original_exception) if original_exception else ""
 
         return StandardLoggingPayloadErrorInformation(
             error_code=error_status,
             error_class=error_class,
             llm_provider=_llm_provider_in_exception,
             traceback=traceback_info,
-            error_message=error_message if original_exception else "",
+            error_message=error_message,
         )
 
     @staticmethod
