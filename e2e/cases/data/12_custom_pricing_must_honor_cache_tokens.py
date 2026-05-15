@@ -1,39 +1,33 @@
 """
-Regression fixture for Case 12 — `router.py:register_model` must not
-write a deployment-UUID entry that strips cache rates.
+Regression fixture for Case 12 — Router must backfill cost fields from
+the canonical static `litellm.model_cost` entry when registering a
+deployment-UUID model_cost row, so that cost calculation against the
+UUID resolves to the correct total even when the user didn't supply
+cache rates (which the dashboard /model/new form doesn't expose).
 
-REAL PROD PATH (verified against a running e2e proxy):
+End-to-end flow exercised:
+  1. Build a `Deployment` mimicking what the dashboard `/model/new`
+     produces — `litellm_params.input_cost_per_token` /
+     `output_cost_per_token` set, but no cache rate fields, and
+     `litellm_params.model="claude-haiku-4-5-20251001"` (known upstream).
+  2. Call `Router.add_deployment(deployment)` — the same code path
+     hit by /model/new and DB-sync.
+  3. Assert `litellm.model_cost[<deployment_uuid>]` has both
+     `cache_read_input_token_cost` and
+     `cache_creation_input_token_cost` populated (backfilled from
+     the static entry for `claude-haiku-4-5-20251001`).
+  4. Run `response_cost_calculator(custom_pricing=True,
+     router_model_id=<uuid>)` for the user-reported Usage shape and
+     assert the total equals the static-map baseline.
 
-  1. Proxy startup / DB sync: `router.py:7230-7237` registers each
-     deployment into `litellm.model_cost` under its UUID. The dict it
-     writes is `deployment.model_info.model_dump(exclude_none=True)`
-     plus any `CustomPricingLiteLLMParams` keys from
-     `deployment.litellm_params`. When the dashboard `/model/new` form
-     was used to add the model, `litellm_params` carries only
-     `input_cost_per_token` and `output_cost_per_token` — and if
-     `deployment.model_info` lacks the static-map cache rates at
-     register time, the UUID entry written into `litellm.model_cost`
-     is permanently missing cache fields.
+Before the router backfill landed, step 3 found `None` and step 4
+under-billed by ~93%. With backfill, the cost calc through the
+custom_pricing/UUID path returns the same total as the bare model
+name path — no more "Reload Price Data" workaround required.
 
-  2. Cost calc time: `cost_calculator._select_model_name_for_cost_calc`
-     (cost_calculator.py:661-672) sees `custom_pricing=True` and
-     prefers the UUID entry over the bare model name. It returns the
-     UUID, and `cost_per_token` then computes against the partial
-     entry — cache tokens go unbilled.
-
-  3. Clicking "Reload Price Data" replaces `litellm.model_cost`
-     wholesale (proxy_server.py:13319), which incidentally evicts the
-     UUID entry. Next call resolves the bare model name and gets the
-     full static-map row, so it bills correctly — until the DB-sync
-     task re-registers the deployment a few minutes later.
-
-This case asserts: a deployment registered with partial pricing must
-NOT under-bill cache tokens. The fix is in `router.py:_create_deployment`
-(see suggested patch in the case markdown).
-
-Run via Case 12 runbook (docker exec). Exit non-zero when the cost
-calc under-bills relative to the correct static-map total.
+Run via Case 12 runbook (docker exec); exit non-zero on regression.
 """
+
 import os
 import sys
 
@@ -42,6 +36,7 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 import litellm
 from litellm import ModelResponse
 from litellm.cost_calculator import response_cost_calculator
+from litellm.router import Router
 from litellm.types.utils import PromptTokensDetailsWrapper, Usage
 
 DEPLOYMENT_UUID = "case12-539b1c62-ac07-47ae-8987-29426984bb55"
@@ -59,7 +54,7 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
-# --- correct baseline: pure model_cost lookup (no UUID interference) ---
+# Correct baseline from the static map
 static_entry = litellm.model_cost.get(MODEL, {})
 input_rate = static_entry.get("input_cost_per_token")
 output_rate = static_entry.get("output_cost_per_token")
@@ -67,8 +62,8 @@ cache_read_rate = static_entry.get("cache_read_input_token_cost")
 cache_create_rate = static_entry.get("cache_creation_input_token_cost")
 if None in (input_rate, output_rate, cache_read_rate, cache_create_rate):
     fail(
-        f"static {MODEL} entry incomplete — this case relies on the bundled "
-        "JSON having full pricing for the baseline model. See case 10."
+        f"static {MODEL} entry incomplete in the bundled JSON — case 12 "
+        f"relies on it for the baseline. See case 10."
     )
 
 non_cache_prompt = PROMPT_TOKENS - CACHE_READ - CACHE_CREATE
@@ -79,29 +74,62 @@ expected_total = (
     + CACHE_CREATE * cache_create_rate
 )
 
-# --- simulate the broken state router.py:7237 produces -----------------
-litellm.register_model({
-    DEPLOYMENT_UUID: {
-        "input_cost_per_token": input_rate,
-        "output_cost_per_token": output_rate,
-        "litellm_provider": PROVIDER,
-        "mode": "chat",
-        # cache_*_input_token_cost intentionally absent — exactly what the
-        # dashboard /model/new form produces, and what gets register_model'd
-        # if deployment.model_info doesn't have the static-map cache fields
-        # merged in by the time _create_deployment runs.
-    }
-})
+# Drop any stale UUID entry left by a previous run so the test is
+# reproducible. (e2e harness Postgres is ephemeral, but litellm.model_cost
+# is per-process and survives across pytest runs in the same container.)
+litellm.model_cost.pop(DEPLOYMENT_UUID, None)
 
-if DEPLOYMENT_UUID not in litellm.model_cost:
-    fail("register_model didn't write the UUID entry — broken assumption")
-if litellm.model_cost[DEPLOYMENT_UUID].get("cache_read_input_token_cost") is not None:
+# Build a Router with a single deployment whose litellm_params mimics the
+# dashboard /model/new output — only input/output rates, no cache fields.
+router = Router(
+    model_list=[
+        {
+            "model_name": "case12-claude-haiku",
+            "litellm_params": {
+                "model": MODEL,
+                "custom_llm_provider": PROVIDER,
+                "input_cost_per_token": input_rate,
+                "output_cost_per_token": output_rate,
+                # cache_*_input_token_cost intentionally absent
+            },
+            "model_info": {
+                "id": DEPLOYMENT_UUID,
+            },
+        }
+    ]
+)
+del router  # the registration side-effects are what we care about
+
+uuid_entry = litellm.model_cost.get(DEPLOYMENT_UUID, {})
+print("After Router(model_list=...) registration:")
+print(f"  UUID entry exists:                 {DEPLOYMENT_UUID in litellm.model_cost}")
+print(
+    f"  input_cost_per_token               = {uuid_entry.get('input_cost_per_token')}"
+)
+print(
+    f"  output_cost_per_token              = {uuid_entry.get('output_cost_per_token')}"
+)
+print(
+    f"  cache_read_input_token_cost        = {uuid_entry.get('cache_read_input_token_cost')}"
+)
+print(
+    f"  cache_creation_input_token_cost    = {uuid_entry.get('cache_creation_input_token_cost')}"
+)
+print()
+
+if uuid_entry.get("cache_read_input_token_cost") is None:
     fail(
-        "UUID entry has cache rates already — something is auto-merging that "
-        "this test was meant to detect; revisit the case design"
+        "Router registered a deployment-UUID model_cost entry without "
+        "cache_read_input_token_cost. The backfill from canonical static "
+        "entry is missing — see router.py _backfill_cost_fields_from_canonical."
+    )
+if uuid_entry.get("cache_creation_input_token_cost") is None:
+    fail(
+        "Router registered a deployment-UUID model_cost entry without "
+        "cache_creation_input_token_cost. Same fix as above."
     )
 
-# --- build the request shape the proxy passes to cost calc -------------
+# Build the cost-calc request shape — same as the prod logging path.
 usage = Usage(
     prompt_tokens=PROMPT_TOKENS,
     completion_tokens=COMPLETION_TOKENS,
@@ -119,11 +147,13 @@ resp = ModelResponse(
     object="chat.completion",
     created=0,
     model=MODEL,
-    choices=[{
-        "index": 0,
-        "message": {"role": "assistant", "content": "ok"},
-        "finish_reason": "stop",
-    }],
+    choices=[
+        {
+            "index": 0,
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop",
+        }
+    ],
     usage=usage,
 )
 resp._hidden_params = {
@@ -131,7 +161,6 @@ resp._hidden_params = {
     "model_id": DEPLOYMENT_UUID,
 }
 
-# --- the actual prod-shaped call ---------------------------------------
 actual_total = response_cost_calculator(
     response_object=resp,
     model=MODEL,
@@ -141,14 +170,10 @@ actual_total = response_cost_calculator(
     cache_hit=None,
     base_model=None,
     prompt="",
-    custom_pricing=True,         # litellm_params has input_cost_per_token set
+    custom_pricing=True,
     router_model_id=DEPLOYMENT_UUID,
 )
 
-print(f"deployment UUID         = {DEPLOYMENT_UUID}")
-print(f"static {MODEL} entry has cache rates: yes")
-print(f"UUID entry has cache rates:           no  (router writes partial dict)")
-print()
 print(f"expected total (correct cache billing)  = ${expected_total:.6f}")
 print(f"actual total via UUID path              = ${actual_total!r}")
 
@@ -157,22 +182,16 @@ if actual_total is None:
 
 EPS = 1e-4
 if abs(actual_total - expected_total) > EPS:
-    print()
-    print(f"FAIL: cost calc via UUID path disagrees with static-map total by "
-          f"${actual_total - expected_total:+.6f} "
-          f"({100*(actual_total - expected_total)/expected_total:+.1f}%)")
-    print()
-    print("Cause: router.py:7237 registers the deployment under its UUID "
-          "with partial pricing. cost_calculator._select_model_name_for_cost_calc "
-          "prefers the UUID over the bare model name, and cost_per_token then "
-          "reads the partial entry — cache_*_input_token_cost are None, so "
-          "the cache portion is dropped.")
-    print()
-    print("Fix: in router._create_deployment, when writing the UUID entry "
-          "into litellm.model_cost, merge the static map's cache rate fields "
-          "for the bare model name when not provided in litellm_params. See "
-          "the case markdown 'Suggested fix' section.")
-    sys.exit(1)
+    diff_pct = 100 * (actual_total - expected_total) / expected_total
+    fail(
+        f"cost calc via UUID path disagrees with static-map total by "
+        f"${actual_total - expected_total:+.6f} ({diff_pct:+.1f}%). "
+        f"This means the Router registered a partial deployment-UUID "
+        f"entry and the cost calc fell through to a path that ignored "
+        f"cache pricing. Check router.py _backfill_cost_fields_from_canonical "
+        f"and confirm it is invoked from both register sites in "
+        f"_create_deployment and add_deployment."
+    )
 
 print()
 print(f"PASS: UUID-path total agrees with static-map total within ${EPS}")
