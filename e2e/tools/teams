@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""
+e2e/tools/teams — team lifecycle wrapper for the E2E proxy.
+
+Subcommands
+-----------
+  new       POST /team/new. Echoes the team_id and metadata.
+  info      GET /team/info?team_id=<id>.
+  delete    POST /team/delete with `{team_ids: [<id>]}`.
+
+Teams are used in case 09 to verify per-team Prometheus label isolation.
+
+Examples
+--------
+  e2e/tools/teams new --alias team-a --max-budget 10
+  e2e/tools/teams new --alias team-b --models claude-sonnet-cache
+  e2e/tools/teams delete --team-id <uuid>
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from typing import Any, Dict, Optional
+
+DEFAULT_PORT = int(os.environ.get("E2E_PROXY_PORT", "4011"))
+DEFAULT_HOST = os.environ.get("E2E_PROXY_HOST", "localhost")
+DEFAULT_MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-e2e-test")
+
+
+def _http(
+    method: str,
+    url: str,
+    master_key: str,
+    payload: Optional[Dict[str, Any]] = None,
+    timeout: float = 30.0,
+) -> Dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(
+        url,
+        method=method,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {master_key}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return {"status": resp.status, "body": resp.read().decode("utf-8")}
+    except urllib.error.HTTPError as e:
+        return {"status": e.code, "body": e.read().decode("utf-8", errors="replace")}
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return {"status": 0, "body": json.dumps({"connection_error": str(e)})}
+
+
+def _emit(result: Dict[str, Any]) -> int:
+    body = result["body"]
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        parsed = {"raw": body}
+    print(json.dumps({"status": result["status"], "response": parsed}, indent=2))
+    if result["status"] == 0:
+        return 3
+    if not (200 <= result["status"] < 300):
+        return 2
+    return 0
+
+
+def cmd_new(args: argparse.Namespace) -> int:
+    payload: Dict[str, Any] = {}
+    if args.alias:
+        payload["team_alias"] = args.alias
+    if args.team_id:
+        payload["team_id"] = args.team_id
+    if args.models:
+        payload["models"] = args.models
+    if args.max_budget is not None:
+        payload["max_budget"] = args.max_budget
+    if args.tpm_limit is not None:
+        payload["tpm_limit"] = args.tpm_limit
+    if args.rpm_limit is not None:
+        payload["rpm_limit"] = args.rpm_limit
+    result = _http("POST", f"{args.proxy_url}/team/new", args.master_key, payload)
+    return _emit(result)
+
+
+def cmd_info(args: argparse.Namespace) -> int:
+    url = f"{args.proxy_url}/team/info?team_id={args.team_id}"
+    result = _http("GET", url, args.master_key)
+    return _emit(result)
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    payload = {"team_ids": [args.team_id]}
+    result = _http("POST", f"{args.proxy_url}/team/delete", args.master_key, payload)
+    return _emit(result)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="e2e/tools/teams")
+    p.add_argument("--proxy-url", default=f"http://{DEFAULT_HOST}:{DEFAULT_PORT}")
+    p.add_argument("--master-key", default=DEFAULT_MASTER_KEY)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    p_new = sub.add_parser("new", help="POST /team/new")
+    p_new.add_argument("--alias")
+    p_new.add_argument(
+        "--team-id",
+        help="Optional explicit UUID. If omitted, the proxy generates one.",
+    )
+    p_new.add_argument("--models", nargs="*")
+    p_new.add_argument("--max-budget", type=float)
+    p_new.add_argument("--tpm-limit", type=int)
+    p_new.add_argument("--rpm-limit", type=int)
+    p_new.set_defaults(func=cmd_new)
+
+    p_info = sub.add_parser("info", help="GET /team/info")
+    p_info.add_argument("--team-id", required=True)
+    p_info.set_defaults(func=cmd_info)
+
+    p_del = sub.add_parser("delete", help="POST /team/delete")
+    p_del.add_argument("--team-id", required=True)
+    p_del.set_defaults(func=cmd_delete)
+
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

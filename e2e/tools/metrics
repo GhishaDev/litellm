@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""
+e2e/tools/metrics — inspect the proxy's /metrics endpoint.
+
+Subcommands
+-----------
+  snapshot              GET /metrics, parse, emit normalized JSON to stdout.
+                        Counter samples carry their float value; histograms
+                        carry per-bucket plus sum/count.
+  diff BEFORE AFTER     Compare two snapshot files. By default lists every
+                        metric whose any-label sample changed. Filter with
+                        --metric / --label.
+  get NAME              Print samples matching NAME (+ optional --label
+                        filters). Useful for "show me one number right now".
+
+Design notes
+------------
+- Stdlib + the project's already-installed `prometheus_client` (parser
+  module). No extra dep.
+- JSON shape is intentionally simple so `jq` works downstream:
+
+    {
+      "scraped_at": "2026-05-14T11:38:00Z",
+      "proxy_url": "http://localhost:4011",
+      "metrics": {
+        "litellm_prompt_cache_read_tokens_metric": [
+          { "labels": {"model": "...", ...}, "value": 4096.0 }
+        ],
+        ...
+      }
+    }
+
+- For counters, prometheus exposes a `_total`-suffixed sample plus a
+  `_created` timestamp. We keep only the `_total` (renamed back to the
+  metric family name) since the timestamp is noise for diff purposes.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+try:
+    from prometheus_client.parser import text_string_to_metric_families
+except ImportError as e:  # pragma: no cover
+    print(
+        "ERROR: prometheus_client is not installed. "
+        "Install it: pip install prometheus_client",
+        file=sys.stderr,
+    )
+    raise SystemExit(4) from e
+
+DEFAULT_PORT = int(os.environ.get("E2E_PROXY_PORT", "4011"))
+DEFAULT_HOST = os.environ.get("E2E_PROXY_HOST", "localhost")
+
+
+# ---------------------------------------------------------------------------
+# fetch + parse
+# ---------------------------------------------------------------------------
+
+
+def fetch_text(base_url: str, timeout: float = 5.0) -> str:
+    with urllib.request.urlopen(f"{base_url}/metrics", timeout=timeout) as r:
+        return r.read().decode("utf-8")
+
+
+def parse_metrics(text: str) -> Dict[str, List[Dict[str, Any]]]:
+    """Return {metric_family_name: [{"labels": {...}, "value": float}, ...]}.
+
+    Counter "_total" suffix is normalized back to the family name. Each
+    bucket of a histogram is treated as its own sample with le="...".
+    """
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for family in text_string_to_metric_families(text):
+        family_name = family.name  # already trimmed of _total / _bucket
+        for sample in family.samples:
+            sample_name = sample.name
+            # Skip `_created` timestamps — they confuse diffs.
+            if sample_name.endswith("_created"):
+                continue
+            # For histograms keep buckets/sum/count under their suffixed names;
+            # for everything else, collapse `*_total` to the family name.
+            if sample_name == family_name + "_total":
+                key = family_name
+            else:
+                key = sample_name
+            out.setdefault(key, []).append(
+                {"labels": dict(sample.labels), "value": float(sample.value)}
+            )
+    return out
+
+
+def snapshot(base_url: str) -> Dict[str, Any]:
+    text = fetch_text(base_url)
+    return {
+        "scraped_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "proxy_url": base_url,
+        "metrics": parse_metrics(text),
+    }
+
+
+# ---------------------------------------------------------------------------
+# match + diff
+# ---------------------------------------------------------------------------
+
+
+def _labels_match(sample_labels: Dict[str, str], wanted: Dict[str, str]) -> bool:
+    return all(sample_labels.get(k) == v for k, v in wanted.items())
+
+
+def find_samples(
+    snap: Dict[str, Any], metric: str, wanted_labels: Dict[str, str]
+) -> List[Dict[str, Any]]:
+    return [
+        s for s in snap["metrics"].get(metric, []) if _labels_match(s["labels"], wanted_labels)
+    ]
+
+
+def diff_samples(
+    before: Dict[str, Any],
+    after: Dict[str, Any],
+    metric_filter: Optional[str],
+    label_filter: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """Return delta records that changed and match filters."""
+    results: List[Dict[str, Any]] = []
+    metric_names = set(after["metrics"].keys()) | set(before["metrics"].keys())
+    for name in sorted(metric_names):
+        if metric_filter and name != metric_filter:
+            continue
+
+        # Index samples by frozen label tuple for stable lookup.
+        def index(snap: Dict[str, Any]) -> Dict[Tuple[Tuple[str, str], ...], float]:
+            return {
+                tuple(sorted(s["labels"].items())): s["value"]
+                for s in snap["metrics"].get(name, [])
+            }
+
+        b_idx = index(before)
+        a_idx = index(after)
+        keys = set(a_idx) | set(b_idx)
+        for k in keys:
+            labels = dict(k)
+            if label_filter and not _labels_match(labels, label_filter):
+                continue
+            delta = a_idx.get(k, 0.0) - b_idx.get(k, 0.0)
+            if delta == 0.0:
+                # Still surface "appeared from absent" — but that's a
+                # delta != 0 case, already handled. Skip pure no-change.
+                continue
+            results.append(
+                {
+                    "metric": name,
+                    "labels": labels,
+                    "before": b_idx.get(k, 0.0),
+                    "after": a_idx.get(k, 0.0),
+                    "delta": delta,
+                }
+            )
+    return results
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _parse_label_args(items: List[str]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for item in items or []:
+        if "=" not in item:
+            raise SystemExit(f"--label expects key=value, got: {item!r}")
+        k, v = item.split("=", 1)
+        out[k] = v
+    return out
+
+
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    snap = snapshot(args.proxy_url)
+    json.dump(snap, sys.stdout, indent=2, ensure_ascii=False)
+    sys.stdout.write("\n")
+    return 0
+
+
+def cmd_diff(args: argparse.Namespace) -> int:
+    before = json.loads(Path(args.before).read_text())
+    after = json.loads(Path(args.after).read_text())
+    labels = _parse_label_args(args.label)
+    diffs = diff_samples(before, after, args.metric, labels)
+    if args.format == "json":
+        json.dump(diffs, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+    else:  # text
+        if not diffs:
+            print("(no deltas)")
+            return 0
+        for d in diffs:
+            label_str = " ".join(f"{k}={v!r}" for k, v in sorted(d["labels"].items()))
+            print(f"{d['metric']:60s} {d['delta']:+.1f}  ({label_str})")
+    return 0
+
+
+def cmd_get(args: argparse.Namespace) -> int:
+    snap = snapshot(args.proxy_url)
+    samples = find_samples(snap, args.metric, _parse_label_args(args.label))
+    if args.format == "json":
+        json.dump(samples, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+    else:
+        if not samples:
+            print("(no matching samples)", file=sys.stderr)
+            return 1
+        for s in samples:
+            label_str = " ".join(f"{k}={v!r}" for k, v in sorted(s["labels"].items()))
+            print(f"{s['value']:>16.1f}  {label_str}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="e2e/tools/metrics")
+    p.add_argument(
+        "--proxy-url", default=f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("snapshot", help="GET /metrics → JSON on stdout").set_defaults(
+        func=cmd_snapshot
+    )
+
+    p_diff = sub.add_parser("diff", help="compare two snapshot files")
+    p_diff.add_argument("before")
+    p_diff.add_argument("after")
+    p_diff.add_argument("--metric", help="restrict to one metric family")
+    p_diff.add_argument(
+        "--label", action="append", default=[], help="key=value (repeatable)"
+    )
+    p_diff.add_argument("--format", choices=["text", "json"], default="text")
+    p_diff.set_defaults(func=cmd_diff)
+
+    p_get = sub.add_parser("get", help="show samples for one metric")
+    p_get.add_argument("metric")
+    p_get.add_argument(
+        "--label", action="append", default=[], help="key=value (repeatable)"
+    )
+    p_get.add_argument("--format", choices=["text", "json"], default="text")
+    p_get.set_defaults(func=cmd_get)
+
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
