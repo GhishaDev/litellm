@@ -42,6 +42,20 @@ class PassThroughStreamingHandler:
         - Inject cost into chunks if include_cost_in_streaming_usage is enabled
         """
         try:
+            # Use the true request-entry timestamp held on the logging
+            # object when it's earlier than the start_time passed in. The
+            # caller's start_time is captured at the streaming-iterator
+            # constructor, which runs AFTER the upstream HTTP response
+            # has already been received — too late to represent when the
+            # client's request entered the proxy. Without this override,
+            # SpendLogs.startTime is artificially deflated by the full
+            # TTFT, making `endTime - startTime` shorter than reality.
+            true_start = getattr(litellm_logging_obj, "start_time", None)
+            if isinstance(true_start, datetime) and (
+                not isinstance(start_time, datetime) or true_start < start_time
+            ):
+                start_time = true_start
+
             raw_bytes: List[bytes] = []
             # Extract model name for cost injection
             model_name = PassThroughStreamingHandler._extract_model_for_cost_injection(
@@ -52,6 +66,16 @@ class PassThroughStreamingHandler:
             )
 
             async for chunk in response.aiter_bytes():
+                # Record TTFT on the first chunk that arrives so spend_logs
+                # `completionStartTime` reflects real time-to-first-token.
+                # Without this, the fallback at
+                # litellm_logging.py:1834-1837 sets completion_start_time =
+                # end_time, making TTFT equal to total Duration for every
+                # passthrough streaming request.
+                if litellm_logging_obj.completion_start_time is None:
+                    litellm_logging_obj._update_completion_start_time(
+                        completion_start_time=datetime.now()
+                    )
                 raw_bytes.append(chunk)
                 if (
                     getattr(litellm, "include_cost_in_streaming_usage", False)
