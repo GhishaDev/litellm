@@ -22,6 +22,7 @@ Humans can execute them too — every step is a concrete shell command.
 | 10 | `10_cost_breakdown_cache_missing.md` | (none — direct calc) | `cost_breakdown.cache_read_cost` / `cache_creation_cost` not silently `None` | — |
 | 11 | `11_error_information_message_populated.md` | (none — invalid key) | `spend_logs.metadata.error_information.error_message` non-empty on failure | ✓ |
 | 12 | `12_custom_pricing_must_honor_cache_tokens.md` | (none — direct calc) | `custom_cost_per_token` short-circuit must include cache pricing (Bug #2 root cause) | — |
+| 14 | `14_anthropic_response_usage_shape.md` | Anthropic | non-streaming `/v1/messages` `usage` matches Anthropic spec (no OpenAI-flavored `total_tokens`); streaming + `/v1/chat/completions` shapes unchanged | — |
 | 16 | `16_budget_reset_no_prisma_error.md` | (none — proxy only) | `ResetBudgetJob.reset_budget_windows` background tick must not raise `prisma.errors.MissingRequiredValueError` on `Json?` null-filter. Regression for BerriAI/litellm#26346 | ✓ |
 | 18 | `18_public_req_middleware.md` | Anthropic | `litellm_extras.PublicReqMiddleware` keeps streaming responses incremental, strips `x-litellm-*` under `X-Public-Req: 1`, and rejects sensitive `/v1/models` query params | — |
 

@@ -313,6 +313,17 @@ case_13() {
     fi
 }
 
+# ------------------------------------------------------------------ 14
+case_14() {
+    echo "[14] anthropic response usage shape..."
+    local out=/tmp/e2e_case14.out
+    if bash e2e/cases/data/14_anthropic_response_usage_shape.sh > "$out" 2>&1; then
+        ok "14 anthropic-usage-shape: $(grep -m1 PASS "$out")"
+    else
+        fail "14 anthropic-usage-shape" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # ------------------------------------------------------------------ 16
 case_16() {
     # ~35 s wall-clock (two reset_budget_job ticks at the e2e override
@@ -379,8 +390,10 @@ case_10
 case_11
 if [ "$SKIP_PAID" -eq 1 ]; then
     skip "13 passthrough-streaming-ttft" "skipped (--skip-paid)"
+    skip "14 anthropic-usage-shape" "skipped (--skip-paid)"
 else
     case_13
+    case_14
 fi
 case_12
 case_16
