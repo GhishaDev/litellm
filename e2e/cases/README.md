@@ -23,6 +23,7 @@ Humans can execute them too — every step is a concrete shell command.
 | 11 | `11_error_information_message_populated.md` | (none — invalid key) | `spend_logs.metadata.error_information.error_message` non-empty on failure | ✓ |
 | 12 | `12_custom_pricing_must_honor_cache_tokens.md` | (none — direct calc) | `custom_cost_per_token` short-circuit must include cache pricing (Bug #2 root cause) | — |
 | 13 | `13_passthrough_streaming_ttft.md` | Anthropic | `/v1/messages` streaming `completionStartTime` must reflect first-chunk arrival, not collapse to `endTime` (streaming_phase ≈ 0) | ✓ |
+| 14 | `14_anthropic_response_usage_shape.md` | Anthropic | non-streaming `/v1/messages` `usage` matches Anthropic spec (no OpenAI-flavored `total_tokens`); streaming + `/v1/chat/completions` shapes unchanged | — |
 
 ## How to invoke
 
