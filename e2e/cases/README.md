@@ -26,6 +26,18 @@ Humans can execute them too — every step is a concrete shell command.
 
 ## How to invoke
 
+### Run everything
+
+```bash
+e2e/tools/run-all-cases               # one PASS/FAIL/SKIP line per case
+e2e/tools/run-all-cases --skip-paid   # only free cases (10, 12)
+```
+
+Exit code is 0 iff every case PASSes (SKIPs allowed). Cost ~$0.05 for
+the full suite.
+
+### Drive a single case via Claude
+
 Tell Claude:
 
 > "Run case 01 and report"
@@ -34,6 +46,14 @@ Tell Claude:
 
 Claude will read the file, execute the steps, surface the diffs, and
 judge against Expected.
+
+### Adding a new case to the runner
+
+1. Drop fixture under `e2e/cases/data/NN_*.sh` or `NN_*.py`
+2. Fixture must exit `0` on PASS, `77` on SKIP, anything else on FAIL
+3. Add a `case_NN()` function in `e2e/tools/run-all-cases` plus the
+   invocation at the bottom of the file
+4. Update this index table above
 
 ## Common preconditions
 

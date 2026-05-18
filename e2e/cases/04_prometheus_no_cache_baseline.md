@@ -19,7 +19,8 @@ e2e/tools/metrics snapshot > /tmp/m_before.json
 
 SEED="case04-$(date +%s)"
 e2e/tools/call --provider anthropic --cache none \
-    --prompt-tokens 1500 --seed "$SEED" > /tmp/call_response.json
+    --prompt-tokens 1500 --seed "$SEED" \
+    --user-id "case04-user-$SEED" > /tmp/call_response.json
 
 e2e/tools/metrics snapshot > /tmp/m_after.json
 

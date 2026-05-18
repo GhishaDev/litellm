@@ -29,6 +29,9 @@ e2e/tools/metrics snapshot > /tmp/m_before.json
 
 # 2. Make one Anthropic request with 5m ephemeral cache.
 #    Seed = unique to avoid reading a cache entry from a previous run.
+#    user_id = stable identifier so the corp Anthropic gateway routes to
+#    a deterministic upstream account (otherwise round-robin LB splits
+#    the cache namespace and metric labels don't aggregate cleanly).
 SEED="case01-$(date +%s)"
 e2e/tools/call \
     --provider anthropic \
@@ -36,6 +39,7 @@ e2e/tools/call \
     --ttl 5m \
     --prompt-tokens 1500 \
     --seed "$SEED" \
+    --user-id "case01-user-$SEED" \
     > /tmp/call_response.json
 
 # 3. Snapshot metrics again

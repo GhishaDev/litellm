@@ -21,10 +21,16 @@ between request 1 and request 2.
 
 ```bash
 SEED="case03-$(date +%s)"
+# user_id makes the corp gateway sticky-route to the same upstream
+# account on both calls, so the second call can read the cache the
+# first call wrote. Without it the gateway round-robins across
+# upstream accounts and cache_read never hits.
+USER_ID="case03-user-$SEED"
 
 # 1. First call — writes the cache
 e2e/tools/call --provider anthropic --cache ephemeral --ttl 5m \
-    --prompt-tokens 1500 --seed "$SEED" > /tmp/call_first.json
+    --prompt-tokens 1500 --seed "$SEED" --user-id "$USER_ID" \
+    > /tmp/call_first.json
 jq '.response.usage' /tmp/call_first.json
 
 # 2. Snapshot AFTER first call so we measure the *read* delta cleanly
@@ -32,7 +38,8 @@ e2e/tools/metrics snapshot > /tmp/m_before.json
 
 # 3. Second call — should hit cache
 e2e/tools/call --provider anthropic --cache ephemeral --ttl 5m \
-    --prompt-tokens 1500 --seed "$SEED" > /tmp/call_second.json
+    --prompt-tokens 1500 --seed "$SEED" --user-id "$USER_ID" \
+    > /tmp/call_second.json
 jq '.response.usage' /tmp/call_second.json
 
 # 4. Snapshot after
@@ -57,5 +64,21 @@ e2e/tools/metrics diff /tmp/m_before.json /tmp/m_after.json \
 
 | Symptom | Action |
 |---|---|
-| 2nd call shows `cache_read_input_tokens=0` | wait <60s, retry — Anthropic occasionally drops fresh entries under load. Also confirm the seed in both calls is identical. |
+| 2nd call shows `cache_read_input_tokens=0` after retries | Likely **gateway** doesn't honor cache reads. Verify by bypassing the proxy: POST the same payload directly to `$ANTHROPIC_API_BASE/v1/messages` twice. If direct also shows `cache_read=0` on the 2nd call, the gateway is the limitation, not litellm. The runbook fixture (`e2e/cases/data/03_prometheus_anthropic_read.sh`) exits 77 (SKIP) in this case. |
 | `delta` mismatches `cache_read_input_tokens` | other traffic hitting the proxy concurrently — pause other calls and rerun |
+
+## Gateway compatibility note
+
+This case asserts on cache **read** behavior. It requires the upstream
+Anthropic endpoint (`$ANTHROPIC_API_BASE`) to share cache state across
+requests. Tested-compatible:
+
+- Direct `https://api.anthropic.com` (with a real Anthropic key)
+- Gateways that proxy without rotating cache keys or stripping
+  `prompt-caching` extensions
+
+Tested-incompatible (case 03 will be skipped):
+
+- Thin Anthropic shims that forward `cache_control` to upstream but
+  don't share the underlying cache across requests
+- Gateways that inject per-request fingerprints into the cache key

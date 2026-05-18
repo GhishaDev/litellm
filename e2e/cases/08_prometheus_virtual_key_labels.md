@@ -37,6 +37,7 @@ e2e/tools/metrics snapshot > /tmp/m_before_08.json
 SEED="case08-$(date +%s)"
 e2e/tools/call --provider anthropic --cache ephemeral --ttl 5m \
     --prompt-tokens 1500 --seed "$SEED" --api-key "$VKEY" \
+    --user-id "case08-user-$SEED" \
     > /tmp/call_08.json
 jq '.response.usage.prompt_tokens_details' /tmp/call_08.json
 
