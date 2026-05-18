@@ -25,6 +25,7 @@ e2e/tools/call \
     --ttl 1h \
     --prompt-tokens 1500 \
     --seed "$SEED" \
+    --user-id "case02-user-$SEED" \
     > /tmp/call_response.json
 
 e2e/tools/metrics snapshot > /tmp/m_after.json

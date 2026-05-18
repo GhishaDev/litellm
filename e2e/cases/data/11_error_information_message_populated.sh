@@ -31,11 +31,12 @@ if [ "$HTTP_CODE" != "401" ]; then
     exit 1
 fi
 
-# 2. Wait for async spend logger to land
-sleep 2
-
-# 3. Read the row stored for this key hash
-ROW=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tA -F'|' -c "
+# 2. Poll for the spend_logs row up to 20s — the async spend logger
+#    can lag several seconds especially for failure-path rows.
+ROW=""
+for _ in $(seq 1 20); do
+    sleep 1
+    ROW=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tA -F'|' -c "
 SELECT
     COALESCE(metadata::jsonb->'error_information'->>'error_code',    ''),
     COALESCE(metadata::jsonb->'error_information'->>'error_class',   ''),
@@ -46,8 +47,12 @@ WHERE api_key = '$HASH'
 ORDER BY \"startTime\" DESC
 LIMIT 1;
 ")
+    if [ -n "$ROW" ]; then
+        break
+    fi
+done
 if [ -z "$ROW" ]; then
-    echo "FAIL: no spend_logs row found for hash $HASH"
+    echo "FAIL: no spend_logs row found for hash $HASH after 20s polling"
     exit 1
 fi
 

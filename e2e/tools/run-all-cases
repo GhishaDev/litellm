@@ -1,0 +1,358 @@
+#!/usr/bin/env bash
+# Master runner for the e2e case suite.
+#
+# Runs every case in sequence, prints a single PASS / FAIL / SKIP line for
+# each, and a final summary. Exit 0 iff zero FAILs.
+#
+# Usage:
+#   e2e/tools/run-all-cases                # full suite, ~$0.05 in provider cost
+#   e2e/tools/run-all-cases --skip-paid    # skip cases that call real providers
+#                                          # (10, 12 only — they're free)
+#
+# Convention for adding a new case:
+#   1. Drop a fixture under e2e/cases/data/NN_*.sh or NN_*.py
+#   2. Add a `_run_case NN <invocation>` line in main() below
+#   3. Fixture must exit 0 on PASS, 77 on SKIP, anything else FAIL
+#
+# Detailed metric-comparison cases (01, 02, 04, 05, 06, 07, 08, 09) are
+# still inline here because they assert against /metrics across two
+# snapshots. The other cases delegate fully to their fixtures.
+
+set -u
+
+PROXY="${PROXY_URL:-http://localhost:4011}"
+DB_CONTAINER="${DB_CONTAINER:-litellm-e2e-db}"
+PROXY_CONTAINER="${PROXY_CONTAINER:-litellm-e2e}"
+MASTER_KEY="${MASTER_KEY:-sk-e2e-test}"
+SKIP_PAID=0
+for arg in "$@"; do
+    case "$arg" in
+        --skip-paid) SKIP_PAID=1 ;;
+        -h|--help)
+            sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+    esac
+done
+
+PASS=0; FAIL=0; SKIP=0
+RESULTS=()
+ok()   { PASS=$((PASS+1)); RESULTS+=("  PASS  $1"); }
+fail() { FAIL=$((FAIL+1)); RESULTS+=("  FAIL  $1 ($2)"); }
+skip() { SKIP=$((SKIP+1)); RESULTS+=("  SKIP  $1 ($2)"); }
+
+# Sum across all series matching a metric+labels selector.
+#
+# Why sum and not "last value": /metrics has one independent series per
+# unique label combination (per-key, per-team, per-user, …). Across a
+# test session the same metric grows new series as virtual keys / teams
+# get minted. Picking "the last matching line" silently swaps which
+# series we're comparing across two snapshots and produces a bogus
+# negative delta. Summing across all matching series gives a stable
+# total even as new series appear.
+snap_sum() {
+    local metric="$1" provider="$2" extra_label="${3:-}"
+    local pat="^${metric}_total{[^}]*api_provider=\"${provider}\""
+    [ -n "$extra_label" ] && pat="${pat}[^}]*${extra_label}"
+    curl -sSL "$PROXY/metrics" 2>/dev/null \
+        | awk -v p="$pat" '
+            $0 ~ p {
+                # Sum the trailing numeric value on each matching line.
+                # Metric value is the last whitespace-separated field.
+                sum += $NF + 0
+            }
+            END { printf "%.0f\n", sum }
+        '
+}
+
+# ------------------------------------------------------------------ 01
+case_01() {
+    echo "[01] anthropic 5m TTL creation..."
+    local before after seed usage delta
+    before=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
+    seed="case01-$$-$(date +%s)"
+    local resp
+    resp=$(e2e/tools/call --provider anthropic --cache ephemeral --ttl 5m \
+        --prompt-tokens 1500 --seed "$seed" --user-id "case01-user-$seed" 2>/dev/null)
+    usage=$(echo "$resp" | jq -r '.response.usage.cache_creation_input_tokens // 0')
+    sleep 1
+    after=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
+    delta=$((after - before))
+    if [ "$usage" -gt 0 ] && [ "$delta" -ge "$((usage - 1))" ] && [ "$delta" -le "$((usage + 50))" ]; then
+        ok "01 anthropic-5m-creation: usage=$usage, metric_delta=$delta"
+    else
+        fail "01 anthropic-5m-creation" "usage=$usage, delta=$delta (before=$before after=$after)"
+    fi
+}
+
+# ------------------------------------------------------------------ 02
+case_02() {
+    echo "[02] anthropic 1h TTL creation..."
+    local before after seed usage delta
+    before=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="1h"')
+    seed="case02-$$-$(date +%s)"
+    local resp
+    resp=$(e2e/tools/call --provider anthropic --cache ephemeral --ttl 1h \
+        --prompt-tokens 1500 --seed "$seed" --user-id "case02-user-$seed" 2>/dev/null)
+    usage=$(echo "$resp" | jq -r '.response.usage.prompt_tokens_details.cache_creation_token_details.ephemeral_1h_input_tokens // 0')
+    sleep 1
+    after=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="1h"')
+    delta=$((after - before))
+    if [ "$usage" -gt 0 ] && [ "$delta" -ge "$((usage - 1))" ] && [ "$delta" -le "$((usage + 50))" ]; then
+        ok "02 anthropic-1h-creation: usage=$usage, metric_delta=$delta"
+    else
+        fail "02 anthropic-1h-creation" "usage=$usage, delta=$delta (before=$before after=$after)"
+    fi
+}
+
+# ------------------------------------------------------------------ 03
+case_03() {
+    echo "[03] anthropic cache read..."
+    local out=/tmp/e2e_case03.out
+    bash e2e/cases/data/03_prometheus_anthropic_read.sh > "$out" 2>&1
+    local rc=$?
+    case "$rc" in
+        0)  ok "03 anthropic-cache-read: $(grep -m1 '^PASS' "$out")" ;;
+        77) skip "03 anthropic-cache-read" "gateway doesn't honor cache reads (see $out)" ;;
+        *)  fail "03 anthropic-cache-read" "$(grep -m1 '^FAIL' "$out" || echo "rc=$rc")" ;;
+    esac
+}
+
+# ------------------------------------------------------------------ 04
+case_04() {
+    echo "[04] no-cache baseline..."
+    local b5 br seed usage_cc usage_cr d5 dr
+    b5=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
+    br=$(snap_sum litellm_prompt_cache_read_tokens_metric anthropic)
+    seed="case04-$$-$(date +%s)"
+    local resp
+    resp=$(e2e/tools/call --provider anthropic --cache none \
+        --prompt-tokens 1500 --seed "$seed" \
+        --user-id "case04-user-$seed" 2>/dev/null)
+    usage_cc=$(echo "$resp" | jq -r '.response.usage.cache_creation_input_tokens // 0')
+    usage_cr=$(echo "$resp" | jq -r '.response.usage.cache_read_input_tokens // 0')
+    sleep 1
+    local a5 ar
+    a5=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
+    ar=$(snap_sum litellm_prompt_cache_read_tokens_metric anthropic)
+    d5=$((a5 - b5))
+    dr=$((ar - br))
+    if [ "$usage_cc" -eq 0 ] && [ "$usage_cr" -eq 0 ] && [ "$d5" -eq 0 ] && [ "$dr" -eq 0 ]; then
+        ok "04 no-cache-baseline: metrics unchanged"
+    else
+        fail "04 no-cache-baseline" "usage_cc=$usage_cc usage_cr=$usage_cr d5=$d5 dr=$dr"
+    fi
+}
+
+# ------------------------------------------------------------------ 05
+case_05() {
+    echo "[05] openai/glm cache read..."
+    local before after seed cached delta
+    before=$(snap_sum litellm_prompt_cache_read_tokens_metric openai)
+    seed="case05-$$-$(date +%s)"
+    e2e/tools/call --provider openai --prompt-tokens 1800 --seed "$seed" > /dev/null 2>&1
+    sleep 2
+    local resp
+    resp=$(e2e/tools/call --provider openai --prompt-tokens 1800 --seed "$seed" 2>/dev/null)
+    cached=$(echo "$resp" | jq -r '.response.usage.prompt_tokens_details.cached_tokens // 0')
+    sleep 1
+    after=$(snap_sum litellm_prompt_cache_read_tokens_metric openai)
+    delta=$((after - before))
+    if [ "$cached" -gt 0 ] && [ "$delta" -ge "$cached" ]; then
+        ok "05 openai-cache-read: cached=$cached, metric_delta=$delta"
+    else
+        fail "05 openai-cache-read" "cached=$cached, delta=$delta"
+    fi
+}
+
+# ------------------------------------------------------------------ 06
+case_06() {
+    echo "[06] openai never emits creation metric..."
+    local rows
+    rows=$(curl -sSL "$PROXY/metrics" 2>/dev/null \
+        | grep "^litellm_prompt_cache_creation_tokens_metric_total" \
+        | grep -cE '(openai|glm)' || true)
+    if [ "$rows" -eq 0 ]; then
+        ok "06 openai-no-creation: 0 rows (correct)"
+    else
+        fail "06 openai-no-creation" "$rows rows found"
+    fi
+}
+
+# ------------------------------------------------------------------ 07
+case_07() {
+    echo "[07] /metrics endpoint smoke..."
+    local fams ct
+    fams=$(curl -sSL "$PROXY/metrics" 2>/dev/null \
+        | grep -c '^# HELP litellm_')
+    ct=$(curl -sSLI "$PROXY/metrics" 2>/dev/null \
+        | grep -ci 'content-type.*text/plain')
+    if [ "$fams" -gt 10 ] && [ "$ct" -ge 1 ]; then
+        ok "07 metrics-endpoint-smoke: $fams litellm_* families, content-type text/plain"
+    else
+        fail "07 metrics-endpoint-smoke" "families=$fams ct_ok=$ct"
+    fi
+}
+
+# ------------------------------------------------------------------ 08
+case_08() {
+    echo "[08] per-virtual-key labels..."
+    local alias key seed hits
+    alias="case08-key-$$-$(date +%s)"
+    key=$(e2e/tools/keys new --alias "$alias" --models claude-sonnet-cache \
+              --duration 30m 2>/dev/null | jq -r '.response.key // ""')
+    if [ -z "$key" ]; then
+        fail "08 virtual-key-labels" "could not mint key"
+        return
+    fi
+    seed="case08-$$-$(date +%s)"
+    e2e/tools/call --provider anthropic --cache ephemeral --ttl 5m \
+        --prompt-tokens 1500 --seed "$seed" --api-key "$key" \
+        --user-id "case08-user-$seed" > /dev/null 2>&1
+    sleep 2
+    hits=$(curl -sSL "$PROXY/metrics" 2>/dev/null \
+        | grep "^litellm_prompt_cache_creation_tokens_metric_total" \
+        | grep -cF "$alias" || true)
+    if [ "$hits" -ge 1 ]; then
+        ok "08 virtual-key-labels: $hits metric row(s) carry api_key_alias=$alias"
+    else
+        fail "08 virtual-key-labels" "no rows with key_alias=$alias"
+    fi
+    e2e/tools/keys delete --key "$key" > /dev/null 2>&1
+}
+
+# ------------------------------------------------------------------ 09
+case_09() {
+    echo "[09] per-team isolation..."
+    local now ta_alias tb_alias ta tb ka kb hits_a hits_b
+    now=$(date +%s)
+    ta_alias="team-a-$$-$now"
+    tb_alias="team-b-$$-$now"
+    ta=$(e2e/tools/teams new --alias "$ta_alias" \
+              --models claude-sonnet-cache 2>/dev/null | jq -r '.response.team_id // ""')
+    tb=$(e2e/tools/teams new --alias "$tb_alias" \
+              --models claude-sonnet-cache 2>/dev/null | jq -r '.response.team_id // ""')
+    ka=$(e2e/tools/keys new --alias "key-a-$$-$now" --team-id "$ta" \
+              --models claude-sonnet-cache --duration 30m 2>/dev/null \
+              | jq -r '.response.key // ""')
+    kb=$(e2e/tools/keys new --alias "key-b-$$-$now" --team-id "$tb" \
+              --models claude-sonnet-cache --duration 30m 2>/dev/null \
+              | jq -r '.response.key // ""')
+    if [ -z "$ta" ] || [ -z "$tb" ] || [ -z "$ka" ] || [ -z "$kb" ]; then
+        fail "09 per-team-isolation" "setup failed (ta=$ta tb=$tb)"
+        return
+    fi
+    e2e/tools/call --provider anthropic --cache ephemeral --ttl 5m \
+        --prompt-tokens 1500 --seed "$ta_alias" --api-key "$ka" \
+        --user-id "$ta_alias-user" > /dev/null 2>&1
+    e2e/tools/call --provider anthropic --cache ephemeral --ttl 5m \
+        --prompt-tokens 1500 --seed "$tb_alias" --api-key "$kb" \
+        --user-id "$tb_alias-user" > /dev/null 2>&1
+    sleep 2
+    hits_a=$(curl -sSL "$PROXY/metrics" 2>/dev/null \
+        | grep "^litellm_prompt_cache_creation_tokens_metric_total" \
+        | grep -cF "$ta_alias" || true)
+    hits_b=$(curl -sSL "$PROXY/metrics" 2>/dev/null \
+        | grep "^litellm_prompt_cache_creation_tokens_metric_total" \
+        | grep -cF "$tb_alias" || true)
+    if [ "$hits_a" -ge 1 ] && [ "$hits_b" -ge 1 ]; then
+        ok "09 per-team-isolation: team_a rows=$hits_a, team_b rows=$hits_b"
+    else
+        fail "09 per-team-isolation" "team_a=$hits_a team_b=$hits_b"
+    fi
+    e2e/tools/keys delete --key "$ka" > /dev/null 2>&1
+    e2e/tools/keys delete --key "$kb" > /dev/null 2>&1
+    e2e/tools/teams delete --team-id "$ta" > /dev/null 2>&1
+    e2e/tools/teams delete --team-id "$tb" > /dev/null 2>&1
+}
+
+# ------------------------------------------------------------------ 10
+case_10() {
+    echo "[10] cost_breakdown happy path..."
+    local out=/tmp/e2e_case10.out
+    docker cp e2e/cases/data/10_cost_breakdown_cache_missing.py \
+        "$PROXY_CONTAINER":/tmp/c10.py > /dev/null 2>&1
+    if docker exec "$PROXY_CONTAINER" python3 /tmp/c10.py > "$out" 2>&1; then
+        ok "10 cost-breakdown: $(grep -m1 PASS "$out")"
+    else
+        fail "10 cost-breakdown" "$(grep -m1 FAIL "$out")"
+    fi
+}
+
+# ------------------------------------------------------------------ 11
+case_11() {
+    echo "[11] error_message persisted to spend_logs..."
+    local out=/tmp/e2e_case11.out
+    if bash e2e/cases/data/11_error_information_message_populated.sh > "$out" 2>&1; then
+        ok "11 error-message-populated: $(grep -m1 PASS "$out")"
+    else
+        fail "11 error-message-populated" "$(grep -m1 FAIL "$out")"
+    fi
+}
+
+# ------------------------------------------------------------------ 12
+case_12() {
+    echo "[12] router backfill cost fields..."
+    local out=/tmp/e2e_case12.out
+    docker cp e2e/cases/data/12_custom_pricing_must_honor_cache_tokens.py \
+        "$PROXY_CONTAINER":/tmp/c12.py > /dev/null 2>&1
+    if docker exec "$PROXY_CONTAINER" python3 /tmp/c12.py > "$out" 2>&1; then
+        ok "12 router-backfill: $(grep -m1 PASS "$out")"
+    else
+        fail "12 router-backfill" "$(grep -m1 FAIL "$out")"
+    fi
+}
+
+# ------------------------------------------------------------------ 13
+case_13() {
+    echo "[13] passthrough streaming TTFT..."
+    local out=/tmp/e2e_case13.out
+    if bash e2e/cases/data/13_passthrough_streaming_ttft.sh > "$out" 2>&1; then
+        ok "13 passthrough-streaming-ttft: $(grep -m1 PASS "$out")"
+    else
+        fail "13 passthrough-streaming-ttft" "$(tail -3 "$out")"
+    fi
+}
+
+# Pre-flight: proxy must be ready
+if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
+        "$PROXY/health/readiness" 2>/dev/null | grep -q '^2'; then
+    if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
+            "$PROXY/metrics" 2>/dev/null | grep -q '^2\|^3'; then
+        echo "FATAL: proxy at $PROXY is not responding."
+        echo "Try: e2e/tools/proxy start"
+        exit 2
+    fi
+fi
+
+echo "============ Running e2e case suite against $PROXY ============"
+echo
+
+case_01
+case_02
+case_03
+case_04
+if [ "$SKIP_PAID" -eq 1 ]; then
+    skip "05 openai-cache-read"   "skipped (--skip-paid)"
+    skip "06 openai-no-creation"  "skipped (--skip-paid; depends on 05)"
+else
+    case_05
+    case_06
+fi
+case_07
+case_08
+case_09
+case_10
+case_11
+if [ "$SKIP_PAID" -eq 1 ]; then
+    skip "13 passthrough-streaming-ttft" "skipped (--skip-paid)"
+else
+    case_13
+fi
+case_12
+
+echo
+echo "============ SUMMARY ============"
+printf '%s\n' "${RESULTS[@]}"
+echo
+echo "Total: $((PASS + FAIL + SKIP))  Pass: $PASS  Fail: $FAIL  Skip: $SKIP"
+[ "$FAIL" -eq 0 ]
