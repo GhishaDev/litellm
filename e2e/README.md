@@ -131,11 +131,18 @@ e2e/tools/proxy logs --tail 100 -f   # follow logs
 e2e/tools/proxy rebuild              # force image rebuild after source change
 e2e/tools/proxy url                  # prints e.g. http://localhost:4011
 
+# Run the full case suite (PASS/FAIL/SKIP summary, exit 0 if all pass)
+e2e/tools/run-all-cases               # ~$0.05 in provider cost
+e2e/tools/run-all-cases --skip-paid   # only free cases (10, 12)
+
 # Make a call (full response JSON on stdout)
 e2e/tools/call --provider anthropic --cache ephemeral --ttl 5m
 e2e/tools/call --provider anthropic --cache none
 e2e/tools/call --provider openai --prompt-tokens 1800 --seed run42
 e2e/tools/call --provider anthropic --api-key sk-...  # use virtual key
+e2e/tools/call --provider anthropic --user-id user-42 # sticky upstream LB
+                                                       # for gateways that
+                                                       # route by user_id
 
 # Metrics
 e2e/tools/metrics snapshot                              # → JSON

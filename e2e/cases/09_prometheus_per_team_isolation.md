@@ -40,13 +40,17 @@ KEY_B=$(jq -r '.response.key' /tmp/key_b.json)
 # 3. Snapshot baseline
 e2e/tools/metrics snapshot > /tmp/m_before_09.json
 
-# 4. Each team makes a cached request — unique seed per team to avoid
-#    cross-team cache reads polluting the assertion.
+# 4. Each team makes a cached request — unique seed AND unique user_id
+#    per team. seed keeps the cache prefix distinct; user_id keeps the
+#    gateway's sticky-LB upstream account distinct, so the two teams'
+#    cache namespaces don't collide on the corp Anthropic gateway.
 e2e/tools/call --provider anthropic --cache ephemeral --ttl 5m \
     --prompt-tokens 1500 --seed "$TEAM_A_ALIAS" --api-key "$KEY_A" \
+    --user-id "$TEAM_A_ALIAS-user" \
     > /tmp/call_09a.json
 e2e/tools/call --provider anthropic --cache ephemeral --ttl 5m \
     --prompt-tokens 1500 --seed "$TEAM_B_ALIAS" --api-key "$KEY_B" \
+    --user-id "$TEAM_B_ALIAS-user" \
     > /tmp/call_09b.json
 echo "team_a usage:"; jq '.response.usage.prompt_tokens_details' /tmp/call_09a.json
 echo "team_b usage:"; jq '.response.usage.prompt_tokens_details' /tmp/call_09b.json

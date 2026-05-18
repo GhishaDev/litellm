@@ -166,8 +166,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1500,
         help="Approximate target size of the system prompt. Must clear "
-        "the provider's cache threshold (Sonnet 1024, Haiku 2048, "
-        "GPT-4o-mini 1024). (default: 1500)",
+        "the provider's cache threshold (Sonnet 4 / 4.5 / 4.6: 1024, "
+        "Haiku 4.5: 4096, Opus 4.5 / 4.6 / 4.7: 4096, "
+        "GPT-4o-mini: 1024). (default: 1500)",
     )
     p.add_argument(
         "--seed",
@@ -197,6 +198,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override --master-key for this call (use for virtual-key tests).",
     )
+    p.add_argument(
+        "--user-id",
+        default=None,
+        help="Stable user identifier forwarded as OpenAI `user` field. Some "
+        "gateways (notably the corp Anthropic shim at maasapi.*) use this "
+        "for sticky upstream LB so subsequent requests share cache state. "
+        "Without it, requests round-robin across upstream accounts and "
+        "Anthropic cache_read never hits.",
+    )
     p.add_argument("--timeout", type=float, default=60.0)
     return p
 
@@ -214,6 +224,11 @@ def main() -> int:
         "messages": messages,
         "max_tokens": args.max_tokens,
     }
+    if args.user_id:
+        # OpenAI-shape `user` field. litellm forwards this through to provider:
+        # for Anthropic backends it lands in `metadata.user_id`, which the
+        # corp gateway uses for sticky upstream-key LB.
+        payload["user"] = args.user_id
 
     auth_key = args.api_key or args.master_key
     result = post_chat_completion(args.proxy_url, auth_key, payload, args.timeout)
