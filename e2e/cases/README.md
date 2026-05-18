@@ -22,6 +22,7 @@ Humans can execute them too — every step is a concrete shell command.
 | 10 | `10_cost_breakdown_cache_missing.md` | (none — direct calc) | `cost_breakdown.cache_read_cost` / `cache_creation_cost` not silently `None` | — |
 | 11 | `11_error_information_message_populated.md` | (none — invalid key) | `spend_logs.metadata.error_information.error_message` non-empty on failure | ✓ |
 | 12 | `12_custom_pricing_must_honor_cache_tokens.md` | (none — direct calc) | `custom_cost_per_token` short-circuit must include cache pricing (Bug #2 root cause) | — |
+| 13 | `13_passthrough_streaming_ttft.md` | Anthropic | `/v1/messages` streaming `completionStartTime` must reflect first-chunk arrival, not collapse to `endTime` (streaming_phase ≈ 0) | ✓ |
 
 ## How to invoke
 
