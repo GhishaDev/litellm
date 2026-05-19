@@ -77,6 +77,40 @@ stays exactly TAG + (merged fixes). Fixes never have to rebase against
 moving upstream; the upstream-sync churn lives entirely on
 `internal/v1.83.10-stable`.
 
+### Cutting an internal release
+
+**Always use `scripts/release-tag.sh`. Never `git tag` by hand.**
+
+```bash
+# After a fix/* PR has been merged into ship/v1.83.10 and you've
+# fast-forwarded local ship/v1.83.10 to match origin:
+scripts/release-tag.sh v1.83.10-internal.N   # N = next integer
+```
+
+The script preflight-checks current branch (must be `ship/*`), worktree
+cleanliness, local/origin sync, and tag non-existence; auto-generates
+the changelog from the previous `internal.N` tag; then prompts `[y/N]`
+before creating the annotated tag and pushing it. Pushing the tag
+triggers `.github/workflows/release-docker.yml`, which builds a
+multi-arch image and pushes:
+
+- `zsk2026/litellm:vX.Y.Z-internal.N`
+- `zsk2026/litellm:vX.Y.Z-stable` (rolling pointer to the latest
+  `-internal.N` on the same base)
+
+**Tag format is enforced:** `^v[0-9]+\.[0-9]+\.[0-9]+-internal\.[0-9]+$`
+— the workflow trigger (`v*-internal.*`) and the script's regex both
+key off this. Anything else won't release.
+
+**Versioning:** `N` is a monotonically increasing integer on top of the
+upstream base (`v1.83.10`). Don't reset, don't skip, don't reuse.
+`git tag -l 'v1.83.10-internal.*' --sort=-v:refname | head -1`
+shows the current.
+
+Because the script is interactive (`read -rp "Proceed? [y/N]"`), prefer
+asking the user to run it directly (`! scripts/release-tag.sh v...`) so
+they own the y/N confirmation — never auto-answer it on their behalf.
+
 ## Architecture Overview
 
 LiteLLM is a unified interface for 100+ LLM providers with two main components:
