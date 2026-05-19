@@ -11,7 +11,7 @@ permissions:
 
 env:
   # Change this if you want a different Docker Hub repo name.
-  IMAGE_NAME: songkuanzheng/litellm
+  IMAGE_NAME: zsk2026/litellm
 
 jobs:
   # ---------------------------------------------------------------------------
