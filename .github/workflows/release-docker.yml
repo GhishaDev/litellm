@@ -1,0 +1,336 @@
+name: Release Docker Image
+
+on:
+  push:
+    tags:
+      # Internal release tags only: v1.83.10-internal.1, v1.83.10-internal.2, etc.
+      - 'v*-internal.*'
+
+permissions:
+  contents: read
+
+env:
+  # Change this if you want a different Docker Hub repo name.
+  IMAGE_NAME: songkuanzheng/litellm
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Build multi-arch image and push to Docker Hub
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: Build and push multi-arch image
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Use an Environment to require manual approval before pushing.
+    # Optional — remove `environment:` if you trust tag pushes implicitly.
+    environment: docker-release
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tag: ${{ steps.version.outputs.tag }}
+      base_version: ${{ steps.version.outputs.base_version }}
+      git_sha: ${{ steps.version.outputs.git_sha }}
+      git_sha_full: ${{ steps.version.outputs.git_sha_full }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # need full history for changelog generation in release job
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
+
+      - name: Verify tag is reachable from ship/* branch
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          echo "Validating tag: ${TAG}"
+          git fetch origin '+refs/heads/ship/*:refs/remotes/origin/ship/*' --no-tags
+          CONTAINING=$(git branch -r --contains "${TAG}" | grep 'origin/ship/' || true)
+          if [ -z "${CONTAINING}" ]; then
+            echo "::error::Tag ${TAG} is not on any ship/* branch. Refusing to publish."
+            exit 1
+          fi
+          echo "Tag is on:${CONTAINING}"
+
+      - name: Extract version components
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          BASE_VERSION="${TAG%-internal.*}"
+          GIT_SHA=$(git rev-parse --short HEAD)
+          GIT_SHA_FULL=$(git rev-parse HEAD)
+
+          echo "tag=${TAG}"               >> "$GITHUB_OUTPUT"
+          echo "base_version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "git_sha=${GIT_SHA}"       >> "$GITHUB_OUTPUT"
+          echo "git_sha_full=${GIT_SHA_FULL}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (for arm64 emulation)
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@0adf9959216b96bec444f325f1e493d4aa344497 # v6.14
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+            ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-${{ steps.version.outputs.git_sha }}
+            ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.base_version }}-stable
+          labels: |
+            org.opencontainers.image.title=litellm
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.version.outputs.git_sha_full }}
+            org.opencontainers.image.version=${{ steps.version.outputs.tag }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # provenance=true would attach SLSA provenance attestation. We're
+          # using cosign signing in the next job instead.
+          provenance: false
+
+      - name: Build summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          # Docker image built and pushed
+
+          | Tag | Image |
+          |---|---|
+          | Internal release  | \`${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}\` |
+          | + git sha (audit) | \`${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-${{ steps.version.outputs.git_sha }}\` |
+          | Rolling stable    | \`${{ env.IMAGE_NAME }}:${{ steps.version.outputs.base_version }}-stable\` |
+
+          **Digest:** \`${{ steps.build.outputs.digest }}\`
+          EOF
+
+  # ---------------------------------------------------------------------------
+  # 2. Sign the pushed image with cosign (keyless, OIDC-based)
+  # ---------------------------------------------------------------------------
+  sign:
+    name: Sign image with cosign (keyless)
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Required for keyless signing via GitHub OIDC → Sigstore Fulcio
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d7d6bc7722e3daa8354c50bcb52f4837da5e9b6a # v3.8.1
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Log in to Docker Hub (cosign needs registry auth)
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Sign image by digest
+        env:
+          DIGEST: ${{ needs.build-and-push.outputs.digest }}
+          TAG: ${{ needs.build-and-push.outputs.tag }}
+          BASE_VERSION: ${{ needs.build-and-push.outputs.base_version }}
+          GIT_SHA: ${{ needs.build-and-push.outputs.git_sha }}
+        run: |
+          # We sign the immutable digest. All three tags resolve to the same
+          # digest, so signing the digest once covers all of them.
+          IMAGE="${IMAGE_NAME}@${DIGEST}"
+          echo "Signing: ${IMAGE}"
+
+          cosign sign --yes \
+            --annotations="repo=${GITHUB_REPOSITORY}" \
+            --annotations="ref=${GITHUB_REF}" \
+            --annotations="sha=${GITHUB_SHA}" \
+            --annotations="workflow=${GITHUB_WORKFLOW}" \
+            --annotations="run_id=${GITHUB_RUN_ID}" \
+            "${IMAGE}"
+
+      - name: Verify signature (self-check)
+        env:
+          DIGEST: ${{ needs.build-and-push.outputs.digest }}
+        run: |
+          # Sanity check: verify the signature we just created. This confirms
+          # the sig was written to the registry and is verifiable end-to-end.
+          cosign verify \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-docker.yml@refs/tags/.*" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE_NAME}@${DIGEST}" \
+            > /dev/null
+          echo "Signature verified."
+
+      - name: Sign summary
+        env:
+          DIGEST: ${{ needs.build-and-push.outputs.digest }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          # Image signed (keyless cosign)
+
+          **Signed digest:** \`${DIGEST}\`
+
+          **Verify locally:**
+
+          \`\`\`bash
+          cosign verify \\
+            --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-docker.yml@refs/tags/.*' \\
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+            ${IMAGE_NAME}@${DIGEST}
+          \`\`\`
+          EOF
+
+  # ---------------------------------------------------------------------------
+  # 3. Create a GitHub Release with auto-generated changelog
+  # ---------------------------------------------------------------------------
+  release:
+    name: Create GitHub Release
+    needs: [build-and-push, sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # required to create the release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Generate changelog from previous internal tag
+        id: changelog
+        env:
+          TAG: ${{ needs.build-and-push.outputs.tag }}
+          BASE_VERSION: ${{ needs.build-and-push.outputs.base_version }}
+        run: |
+          # Find previous internal tag of the same base version
+          PREV_TAG=$(git tag --list "${BASE_VERSION}-internal.*" --sort=-v:refname \
+            | grep -v "^${TAG}$" | head -n1 || true)
+
+          if [ -n "${PREV_TAG}" ]; then
+            RANGE="${PREV_TAG}..${TAG}"
+            echo "Previous tag: ${PREV_TAG}"
+          else
+            # First internal release of this base version — use upstream tag
+            # as the lower bound if it exists.
+            if git rev-parse "refs/tags/${BASE_VERSION}-stable" >/dev/null 2>&1; then
+              PREV_TAG="${BASE_VERSION}-stable"
+              RANGE="${PREV_TAG}..${TAG}"
+              echo "First internal tag, using upstream pin: ${PREV_TAG}"
+            else
+              RANGE="HEAD~20..${TAG}"
+              echo "No baseline tag found, using last 20 commits"
+            fi
+          fi
+
+          # Build changelog. Use HEREDOC delimiter for multi-line output.
+          {
+            echo "changelog<<CHANGELOG_EOF"
+            git log --pretty=format:'- %s ([\`%h\`](${{ github.server_url }}/${{ github.repository }}/commit/%H))' "${RANGE}" --no-merges
+            echo ""
+            echo "CHANGELOG_EOF"
+            echo "prev_tag=${PREV_TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compose release notes
+        id: notes
+        env:
+          TAG: ${{ needs.build-and-push.outputs.tag }}
+          BASE_VERSION: ${{ needs.build-and-push.outputs.base_version }}
+          GIT_SHA: ${{ needs.build-and-push.outputs.git_sha }}
+          GIT_SHA_FULL: ${{ needs.build-and-push.outputs.git_sha_full }}
+          DIGEST: ${{ needs.build-and-push.outputs.digest }}
+          CHANGELOG: ${{ steps.changelog.outputs.changelog }}
+          PREV_TAG: ${{ steps.changelog.outputs.prev_tag }}
+        run: |
+          cat > release-notes.md <<EOF
+          Internal release **${TAG}** based on upstream pin \`${BASE_VERSION}-stable\`.
+
+          ## Docker Images
+
+          | Tag | Description |
+          |---|---|
+          | \`${IMAGE_NAME}:${TAG}\` | Immutable internal release |
+          | \`${IMAGE_NAME}:${TAG}-${GIT_SHA}\` | Immutable + git sha (audit trail) |
+          | \`${IMAGE_NAME}:${BASE_VERSION}-stable\` | Rolling stable pointer for ${BASE_VERSION} |
+
+          **Image digest:** \`${DIGEST}\`
+
+          **Pull:**
+
+          \`\`\`bash
+          docker pull ${IMAGE_NAME}:${TAG}
+          \`\`\`
+
+          ## Verify Docker Image Signature
+
+          All images are signed with [cosign](https://docs.sigstore.dev/cosign/overview/)
+          using GitHub OIDC keyless signing. No public key required — verification uses
+          the workflow identity.
+
+          \`\`\`bash
+          cosign verify \\
+            --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-docker.yml@refs/tags/.*' \\
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \\
+            ${IMAGE_NAME}@${DIGEST}
+          \`\`\`
+
+          Expected output:
+
+          \`\`\`
+          Verification for ${IMAGE_NAME}@${DIGEST} --
+          The following checks were performed on each of these signatures:
+            - The cosign claims were validated
+            - Existence of the claims in the transparency log was verified offline
+            - The code-signing certificate was verified using trusted certificate authority certificates
+          \`\`\`
+
+          ## Changes since ${PREV_TAG:-baseline}
+
+          ${CHANGELOG}
+
+          ## Source
+
+          Built from commit [\`${GIT_SHA}\`](${{ github.server_url }}/${{ github.repository }}/commit/${GIT_SHA_FULL}) on branch \`ship/${BASE_VERSION#v}\` (or wherever the tag was pushed from).
+          EOF
+
+          echo "Release notes written:"
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build-and-push.outputs.tag }}
+        run: |
+          gh release create "${TAG}" \
+            --title "${TAG}" \
+            --notes-file release-notes.md \
+            --target "${GITHUB_SHA}" \
+            --verify-tag
+
+      - name: Release summary
+        env:
+          TAG: ${{ needs.build-and-push.outputs.tag }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          # GitHub Release created
+
+          [View release: ${TAG}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${TAG})
+          EOF
