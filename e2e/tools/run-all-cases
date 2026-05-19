@@ -346,6 +346,21 @@ case_14() {
     fi
 }
 
+# ------------------------------------------------------------------ 15
+case_15() {
+    echo "[15] /v1/models honors user.models..."
+    local out=/tmp/e2e_case15.out
+    bash e2e/cases/data/15_v1_models_user_filter.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "15 v1-models-user-filter: $(grep -m1 PASS "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "15 v1-models-user-filter" "$(grep -m1 SKIP "$out")"
+    else
+        fail "15 v1-models-user-filter" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # ------------------------------------------------------------------ 16
 case_16() {
     # ~35 s wall-clock (two reset_budget_job ticks at the e2e override
@@ -380,6 +395,36 @@ case_18() {
     fi
 }
 
+# ------------------------------------------------------------------ 20
+case_20() {
+    echo "[20] returned_model_name override (4 paths)..."
+    local out=/tmp/e2e_case20.out
+    bash e2e/cases/data/20_returned_model_name.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "20 returned-model-name: $(grep -c '^PASS' "$out") assertions PASS"
+    elif [ "$rc" -eq 77 ]; then
+        skip "20 returned-model-name" "$(grep -m1 SKIP "$out")"
+    else
+        fail "20 returned-model-name" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
+# ------------------------------------------------------------------ 21
+case_21() {
+    echo "[21] /v1/messages error shape (Anthropic envelope)..."
+    local out=/tmp/e2e_case21.out
+    bash e2e/cases/data/21_anthropic_error_shape.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "21 anthropic-error-shape: $(grep -c '^PASS' "$out") assertions PASS"
+    elif [ "$rc" -eq 77 ]; then
+        skip "21 anthropic-error-shape" "$(grep -m1 SKIP "$out")"
+    else
+        fail "21 anthropic-error-shape" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # Case 23 needs the mock; --skip-paid alone shouldn't skip it (it's free),
 # but it does require `--with-mock` to be active. The runner's mock-only
 # preflight is the gate; outside of --mock-only we still attempt it and let
@@ -395,37 +440,6 @@ case_23() {
         skip "23 mock-memory-pressure" "$(grep -m1 SKIP "$out")"
     else
         fail "23 mock-memory-pressure" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
-    fi
-}
-
-
-case_21() {
-    echo "[21] /v1/messages error shape (Anthropic envelope)..."
-    local out=/tmp/e2e_case21.out
-    bash e2e/cases/data/21_anthropic_error_shape.sh > "$out" 2>&1
-    local rc=$?
-    if [ "$rc" -eq 0 ]; then
-        ok "21 anthropic-error-shape: $(grep -c '^PASS' "$out") assertions PASS"
-    elif [ "$rc" -eq 77 ]; then
-        skip "21 anthropic-error-shape" "$(grep -m1 SKIP "$out")"
-    else
-        fail "21 anthropic-error-shape" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
-    fi
-}
-
-case_20() {
-    echo "[20] returned_model_name override (4 paths)..."
-    local out=/tmp/e2e_case20.out
-    bash e2e/cases/data/20_returned_model_name.sh > "$out" 2>&1
-    local rc=$?
-    if [ "$rc" -eq 0 ]; then
-        ok "20 returned-model-name: $(grep -c '^PASS' "$out") assertions PASS"
-    elif [ "$rc" -eq 77 ]; then
-        skip "20 returned-model-name" "$(grep -m1 SKIP "$out")"
-    else
-        fail "20 returned-model-name" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
-    fi
-}
 
 # Pre-flight: proxy must be ready
 if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
@@ -530,6 +544,7 @@ else
     case_14
 fi
 case_12
+case_15
 case_16
 if [ "$SKIP_PAID" -eq 1 ]; then
     skip "18 public-req-middleware" "skipped (--skip-paid)"
