@@ -21,9 +21,9 @@ jobs:
     name: Build and push multi-arch image
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    # Use an Environment to require manual approval before pushing.
-    # Optional — remove `environment:` if you trust tag pushes implicitly.
-    environment: docker-release
+    # To require manual approval before pushing, create a GitHub Environment
+    # named e.g. "docker-release" with required reviewers, then add:
+    #   environment: docker-release
     outputs:
       digest: ${{ steps.build.outputs.digest }}
       tag: ${{ steps.version.outputs.tag }}
