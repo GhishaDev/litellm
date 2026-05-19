@@ -249,3 +249,155 @@ def test_get_complete_model_list_byok_wildcard_expansion():
     assert len(result) > 0
     assert all(m.startswith("openai/") for m in result)
     assert "openai/*" not in result
+
+
+# -----------------------------------------------------------------------------
+# get_user_models — mirrors get_team_models, gated on `LiteLLM_UserTable.models`
+# (the "Personal Models" UI field). Powers per-user filtering on /v1/models
+# (BerriAI/litellm#26420).
+# -----------------------------------------------------------------------------
+
+
+def test_get_user_models_empty_returns_empty():
+    from litellm.proxy.auth.model_checks import get_user_models
+
+    assert (
+        get_user_models(
+            user_models=[],
+            proxy_model_list=["m1", "m2"],
+            model_access_groups={},
+        )
+        == []
+    )
+
+
+def test_get_user_models_raw_names_passthrough():
+    from litellm.proxy.auth.model_checks import get_user_models
+
+    result = get_user_models(
+        user_models=["gpt-4", "claude-3-opus"],
+        proxy_model_list=["gpt-4", "claude-3-opus", "claude-3-haiku"],
+        model_access_groups={},
+    )
+    assert set(result) == {"gpt-4", "claude-3-opus"}
+
+
+def test_get_user_models_all_proxy_models_expands():
+    from litellm.proxy.auth.model_checks import get_user_models
+
+    result = get_user_models(
+        user_models=["all-proxy-models"],
+        proxy_model_list=["m1", "m2", "m3"],
+        model_access_groups={},
+    )
+    assert set(result) == {"all-proxy-models", "m1", "m2", "m3"}
+
+
+def test_get_user_models_access_group_expansion():
+    from litellm.proxy.auth.model_checks import get_user_models
+
+    result = get_user_models(
+        user_models=["common-models"],
+        proxy_model_list=["gpt-4", "claude-3-haiku", "claude-3-opus"],
+        model_access_groups={
+            "common-models": ["gpt-4", "claude-3-haiku"],
+        },
+    )
+    # group name stripped, members expanded
+    assert "common-models" not in result
+    assert set(result) == {"gpt-4", "claude-3-haiku"}
+
+
+def test_get_user_models_does_not_mutate_input():
+    """Mirror of test_get_key_models_does_not_mutate_input."""
+    from litellm.proxy.auth.model_checks import get_user_models
+
+    original = ["common-models", "extra-model"]
+    user_models = list(original)
+    _ = get_user_models(
+        user_models=user_models,
+        proxy_model_list=["m1", "m2"],
+        model_access_groups={"common-models": ["m1"]},
+    )
+    assert user_models == original
+
+
+# -----------------------------------------------------------------------------
+# filter_models_by_user_access — exact + fnmatch wildcard intersection.
+# -----------------------------------------------------------------------------
+
+
+def test_filter_models_by_user_access_exact():
+    from litellm.proxy.auth.model_checks import filter_models_by_user_access
+
+    result = filter_models_by_user_access(
+        models=["gpt-4", "claude-3-opus", "claude-3-haiku"],
+        user_allowed_models=["claude-3-opus"],
+    )
+    assert result == ["claude-3-opus"]
+
+
+def test_filter_models_by_user_access_preserves_order():
+    from litellm.proxy.auth.model_checks import filter_models_by_user_access
+
+    result = filter_models_by_user_access(
+        models=["a", "b", "c", "d"],
+        user_allowed_models=["d", "b"],
+    )
+    assert result == ["b", "d"]
+
+
+def test_filter_models_by_user_access_wildcard():
+    from litellm.proxy.auth.model_checks import filter_models_by_user_access
+
+    result = filter_models_by_user_access(
+        models=[
+            "anthropic/claude-3-opus",
+            "anthropic/claude-3-haiku",
+            "openai/gpt-4",
+        ],
+        user_allowed_models=["anthropic/*"],
+    )
+    assert result == [
+        "anthropic/claude-3-opus",
+        "anthropic/claude-3-haiku",
+    ]
+
+
+def test_filter_models_by_user_access_global_wildcard():
+    from litellm.proxy.auth.model_checks import filter_models_by_user_access
+
+    result = filter_models_by_user_access(
+        models=["a", "b", "c"],
+        user_allowed_models=["*"],
+    )
+    assert result == ["a", "b", "c"]
+
+
+def test_filter_models_by_user_access_no_match_returns_empty():
+    from litellm.proxy.auth.model_checks import filter_models_by_user_access
+
+    result = filter_models_by_user_access(
+        models=["gpt-4", "claude-3-opus"],
+        user_allowed_models=["mistral-large", "anthropic/*"],
+    )
+    assert result == []
+
+
+def test_filter_models_by_user_access_mixed_exact_and_wildcard():
+    from litellm.proxy.auth.model_checks import filter_models_by_user_access
+
+    result = filter_models_by_user_access(
+        models=[
+            "gpt-4",
+            "anthropic/claude-3-opus",
+            "anthropic/claude-3-haiku",
+            "mistral-large",
+        ],
+        user_allowed_models=["gpt-4", "anthropic/*"],
+    )
+    assert result == [
+        "gpt-4",
+        "anthropic/claude-3-opus",
+        "anthropic/claude-3-haiku",
+    ]

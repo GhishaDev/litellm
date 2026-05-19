@@ -264,3 +264,321 @@ def test_enrich_http_exception_callback_without_guardrail_name_noop():
     exc = HTTPException(status_code=400, detail={"error": "x"})
     _enrich_http_exception_with_guardrail_context(exc, StubCallback())
     assert exc.detail == {"error": "x"}
+
+
+# -----------------------------------------------------------------------------
+# _apply_user_models_filter — per-user restriction on /v1/models listing.
+# Parity with can_user_call_model at inference time (BerriAI/litellm#26420).
+# -----------------------------------------------------------------------------
+
+
+def _make_dict():
+    """Stand-in for `UserAPIKeyAuth` — `_apply_user_models_filter` only reads
+    `.user_id`, so an attribute-bearing object is enough and avoids pulling
+    the full Pydantic model into every test.
+    """
+
+    class _UAK:
+        def __init__(self, user_id):
+            self.user_id = user_id
+
+    return _UAK
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_no_user_id_skips_filter(monkeypatch):
+    """Master key / service account → user_id is None → no filter."""
+    from litellm.proxy import utils as proxy_utils
+
+    UAK = _make_dict()
+
+    async def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("get_user_object must not be called when user_id is None")
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _should_not_be_called,
+    )
+
+    result = await proxy_utils._apply_user_models_filter(
+        all_models=["m1", "m2"],
+        user_api_key_dict=UAK(user_id=None),
+        proxy_model_list=["m1", "m2"],
+        model_access_groups={},
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == ["m1", "m2"]
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_no_prisma_skips_filter(monkeypatch):
+    """No DB connection → return list unchanged."""
+    from litellm.proxy import utils as proxy_utils
+
+    UAK = _make_dict()
+    result = await proxy_utils._apply_user_models_filter(
+        all_models=["m1", "m2"],
+        user_api_key_dict=UAK(user_id="u1"),
+        proxy_model_list=["m1", "m2"],
+        model_access_groups={},
+        prisma_client=None,
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == ["m1", "m2"]
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_user_obj_none_skips_filter(monkeypatch):
+    """user_id present but DB returns no row → no filter."""
+    from litellm.proxy import utils as proxy_utils
+
+    UAK = _make_dict()
+
+    async def _none_user(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _none_user,
+    )
+
+    result = await proxy_utils._apply_user_models_filter(
+        all_models=["m1", "m2"],
+        user_api_key_dict=UAK(user_id="u-missing"),
+        proxy_model_list=["m1", "m2"],
+        model_access_groups={},
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == ["m1", "m2"]
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_empty_user_models_skips_filter(monkeypatch):
+    """user.models == [] → unrestricted → no filter."""
+    from litellm.proxy import utils as proxy_utils
+    from litellm.proxy._types import LiteLLM_UserTable
+
+    UAK = _make_dict()
+
+    async def _user(*args, **kwargs):
+        return LiteLLM_UserTable(
+            user_id="u1", max_budget=None, user_email=None, models=[]
+        )
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _user,
+    )
+    result = await proxy_utils._apply_user_models_filter(
+        all_models=["m1", "m2"],
+        user_api_key_dict=UAK(user_id="u1"),
+        proxy_model_list=["m1", "m2"],
+        model_access_groups={},
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == ["m1", "m2"]
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_no_default_models_returns_empty(monkeypatch):
+    """`no-default-models` sentinel → /v1/models returns [] (matches 401 inference)."""
+    from litellm.proxy import utils as proxy_utils
+    from litellm.proxy._types import LiteLLM_UserTable
+
+    UAK = _make_dict()
+
+    async def _user(*args, **kwargs):
+        return LiteLLM_UserTable(
+            user_id="u1",
+            max_budget=None,
+            user_email=None,
+            models=["no-default-models"],
+        )
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _user,
+    )
+    result = await proxy_utils._apply_user_models_filter(
+        all_models=["m1", "m2"],
+        user_api_key_dict=UAK(user_id="u1"),
+        proxy_model_list=["m1", "m2"],
+        model_access_groups={},
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_all_proxy_models_no_filter(monkeypatch):
+    """`all-proxy-models` sentinel → no filter."""
+    from litellm.proxy import utils as proxy_utils
+    from litellm.proxy._types import LiteLLM_UserTable
+
+    UAK = _make_dict()
+
+    async def _user(*args, **kwargs):
+        return LiteLLM_UserTable(
+            user_id="u1",
+            max_budget=None,
+            user_email=None,
+            models=["all-proxy-models"],
+        )
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _user,
+    )
+    result = await proxy_utils._apply_user_models_filter(
+        all_models=["m1", "m2", "m3"],
+        user_api_key_dict=UAK(user_id="u1"),
+        proxy_model_list=["m1", "m2", "m3"],
+        model_access_groups={},
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == ["m1", "m2", "m3"]
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_restrictive_intersect(monkeypatch):
+    """The bug from #26420: user.models is a strict subset → filter narrows."""
+    from litellm.proxy import utils as proxy_utils
+    from litellm.proxy._types import LiteLLM_UserTable
+
+    UAK = _make_dict()
+
+    async def _user(*args, **kwargs):
+        return LiteLLM_UserTable(
+            user_id="u1",
+            max_budget=None,
+            user_email=None,
+            models=["claude-3-opus"],
+        )
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _user,
+    )
+    result = await proxy_utils._apply_user_models_filter(
+        all_models=["gpt-4", "claude-3-opus", "claude-3-haiku"],
+        user_api_key_dict=UAK(user_id="u1"),
+        proxy_model_list=["gpt-4", "claude-3-opus", "claude-3-haiku"],
+        model_access_groups={},
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == ["claude-3-opus"]
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_access_group_expansion(monkeypatch):
+    """user.models lists a group → expanded then intersected."""
+    from litellm.proxy import utils as proxy_utils
+    from litellm.proxy._types import LiteLLM_UserTable
+
+    UAK = _make_dict()
+
+    async def _user(*args, **kwargs):
+        return LiteLLM_UserTable(
+            user_id="u1",
+            max_budget=None,
+            user_email=None,
+            models=["common-models"],
+        )
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _user,
+    )
+    result = await proxy_utils._apply_user_models_filter(
+        all_models=["gpt-4", "claude-3-opus", "claude-3-haiku"],
+        user_api_key_dict=UAK(user_id="u1"),
+        proxy_model_list=["gpt-4", "claude-3-opus", "claude-3-haiku"],
+        model_access_groups={
+            "common-models": ["gpt-4", "claude-3-haiku"],
+        },
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == ["gpt-4", "claude-3-haiku"]
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_wildcard(monkeypatch):
+    """`anthropic/*` in user.models → keep all anthropic/* in the list."""
+    from litellm.proxy import utils as proxy_utils
+    from litellm.proxy._types import LiteLLM_UserTable
+
+    UAK = _make_dict()
+
+    async def _user(*args, **kwargs):
+        return LiteLLM_UserTable(
+            user_id="u1",
+            max_budget=None,
+            user_email=None,
+            models=["anthropic/*"],
+        )
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _user,
+    )
+    result = await proxy_utils._apply_user_models_filter(
+        all_models=[
+            "anthropic/claude-3-opus",
+            "anthropic/claude-3-haiku",
+            "openai/gpt-4",
+        ],
+        user_api_key_dict=UAK(user_id="u1"),
+        proxy_model_list=[
+            "anthropic/claude-3-opus",
+            "anthropic/claude-3-haiku",
+            "openai/gpt-4",
+        ],
+        model_access_groups={},
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == ["anthropic/claude-3-opus", "anthropic/claude-3-haiku"]
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_get_user_object_raises_skips_filter(
+    monkeypatch,
+):
+    """If user lookup blips, we must not break /v1/models — just skip the filter."""
+    from litellm.proxy import utils as proxy_utils
+
+    UAK = _make_dict()
+
+    async def _raise(*args, **kwargs):
+        raise RuntimeError("db blip")
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _raise,
+    )
+    result = await proxy_utils._apply_user_models_filter(
+        all_models=["m1", "m2"],
+        user_api_key_dict=UAK(user_id="u1"),
+        proxy_model_list=["m1", "m2"],
+        model_access_groups={},
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == ["m1", "m2"]

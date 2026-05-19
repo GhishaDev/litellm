@@ -324,6 +324,21 @@ case_14() {
     fi
 }
 
+# ------------------------------------------------------------------ 15
+case_15() {
+    echo "[15] /v1/models honors user.models..."
+    local out=/tmp/e2e_case15.out
+    bash e2e/cases/data/15_v1_models_user_filter.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "15 v1-models-user-filter: $(grep -m1 PASS "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "15 v1-models-user-filter" "$(grep -m1 SKIP "$out")"
+    else
+        fail "15 v1-models-user-filter" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # Pre-flight: proxy must be ready
 if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
         "$PROXY/health/readiness" 2>/dev/null | grep -q '^2'; then
@@ -362,6 +377,7 @@ else
     case_14
 fi
 case_12
+case_15
 
 echo
 echo "============ SUMMARY ============"
