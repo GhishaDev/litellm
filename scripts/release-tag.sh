@@ -93,7 +93,7 @@ cat <<EOF
 Tag ${VERSION} pushed to origin.
 
 Watch the build at:
-  https://github.com/${GITHUB_REPOSITORY:-songkuan-zheng/litellm}/actions/workflows/release-docker.yml
+  https://github.com/${GITHUB_REPOSITORY:-GhishaDev/litellm}/actions/workflows/release-docker.yml
 
 Once green, the following images will be available:
   docker pull <your-dockerhub-user>/litellm:${VERSION}
