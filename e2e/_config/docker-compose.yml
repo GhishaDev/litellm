@@ -48,6 +48,13 @@ services:
       # this URL. Compose-network DNS resolves `db` to the postgres container.
       DATABASE_URL: "postgresql://litellm:e2e-test-only-not-a-secret@db:5432/litellm"
       STORE_MODEL_IN_DB: "True"
+      # Speed up the budget-reset background job so e2e cases can verify
+      # it within a single test run. Upstream default is ~600 s (10 min);
+      # for dev/e2e there's no cost reason to wait that long, and Case 16
+      # (`reset_budget_windows` regression for BerriAI/litellm#26346) needs
+      # at least one tick to land inside its observation window.
+      PROXY_BUDGET_RESCHEDULER_MIN_TIME: "10"
+      PROXY_BUDGET_RESCHEDULER_MAX_TIME: "15"
       # Forwarded from e2e/.env via `env_file`
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"

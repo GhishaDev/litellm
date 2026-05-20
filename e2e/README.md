@@ -54,7 +54,8 @@ path without touching code.
 
 ```bash
 # 2. Pre-build the image (subsequent starts are instant)
-e2e/tools/proxy rebuild             # ~3-5 min first time
+e2e/tools/proxy rebuild             # ~3-5 min first time. Subsequent source-only
+                                    # changes — use `proxy build` instead (30-90s).
 ```
 
 The Python interpreter that runs the tools must have
@@ -128,7 +129,8 @@ e2e/tools/proxy start                # boot (idempotent) — brings up db + lite
 e2e/tools/proxy stop                 # tear down (wipes db)
 e2e/tools/proxy status               # exit 0 if ready
 e2e/tools/proxy logs --tail 100 -f   # follow logs
-e2e/tools/proxy rebuild              # force image rebuild after source change
+e2e/tools/proxy build                # cached rebuild + recreate (30-90s; default for source edits)
+e2e/tools/proxy rebuild              # --no-cache rebuild + recreate (~3-5 min; for Dockerfile/dep changes)
 e2e/tools/proxy url                  # prints e.g. http://localhost:4011
 
 # Run the full case suite (PASS/FAIL/SKIP summary, exit 0 if all pass)
