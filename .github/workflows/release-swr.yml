@@ -4,10 +4,11 @@ on:
   push:
     tags:
       - 'v*-internal.*'
+      - 'v*-ghisha.*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build from (e.g. v1.83.10-internal.3)'
+        description: 'Image tag to publish (e.g. v1.83.10-ghisha.1). Does not need to be a git tag.'
         required: true
         type: string
 
@@ -15,7 +16,7 @@ env:
   SWR_REGION: ap-southeast-3
   SWR_REGISTRY: swr.ap-southeast-3.myhuaweicloud.com
   SWR_ORG: ghisha
-  IMAGE_NAME: litellm
+  IMAGE_NAME: ghisha-gateway
 
 jobs:
   build-and-push:
@@ -44,7 +45,8 @@ jobs:
           else
             TAG="${GITHUB_REF_NAME}"
           fi
-          BASE_VERSION="${TAG%-internal.*}"
+          # Strip -internal.N or -ghisha.N suffix to get base version
+          BASE_VERSION=$(echo "$TAG" | sed -E 's/-(internal|ghisha)\.[0-9]+$//')
           GIT_SHA=$(git rev-parse --short HEAD)
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "base_version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
@@ -52,6 +54,7 @@ jobs:
           echo "Tag: ${TAG}, Base: ${BASE_VERSION}, SHA: ${GIT_SHA}"
 
       - name: Verify tag is reachable from ship/* branch
+        if: github.event_name != 'workflow_dispatch'
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           git fetch origin '+refs/heads/ship/*:refs/remotes/origin/ship/*' --no-tags
