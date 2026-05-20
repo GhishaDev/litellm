@@ -168,6 +168,7 @@ LiteLLM is a unified interface for 100+ LLM providers with two main components:
 - Integration tests for each provider in `tests/llm_translation/`
 - Proxy tests in `tests/proxy_unit_tests/`
 - Load tests in `tests/load_tests/`
+- **End-to-end tests in `e2e/` (root, not under `tests/`)** — Claude-driven runbook harness, not pytest. Cases live in `e2e/cases/NN_*.md`; tools in `e2e/tools/` (`proxy`, `keys`, `teams`, `metrics`, `call`, `run-all-cases`). Docker Compose brings up Postgres + a litellm container built from local source. **Whenever a fix needs full-stack verification (DB schema, background jobs, real HTTP flow), add a new case under `e2e/cases/` rather than spinning up bespoke integration infra under `tests/`.** Update the index in `e2e/cases/README.md`. See `e2e/README.md` for the harness contract.
 - **Always add tests when adding new entity types or features** — if the existing test file covers other entity types, add corresponding tests for the new one
 - **Keep monkeypatch stubs in sync with real signatures** — when a function gains a new optional parameter, update every `fake_*` / `stub_*` in tests that patch it to also accept that kwarg (even as `**kwargs`). Stale stubs fail with `unexpected keyword argument` and mask real bugs.
 - **Test all branches of name→ID resolution** — when adding server/resource lookup that resolves names to UUIDs, test: (1) name resolves and UUID is allowed, (2) name resolves but UUID is not allowed, (3) name does not resolve at all. The silent-fallback path is where access-control bugs hide.

@@ -262,6 +262,33 @@ def cmd_rebuild(_args: argparse.Namespace) -> int:
     return _compose("up", "-d", "--force-recreate").returncode
 
 
+def cmd_build(_args: argparse.Namespace) -> int:
+    """Cached rebuild — fast path for iterating on local source changes.
+
+    `compose build` (without `--no-cache`) re-runs only the layers below
+    whichever layer the change invalidated, which for litellm is the
+    `COPY` of the source tree. Typical incremental edit: 30–90s, vs.
+    3–5 min for `cmd_rebuild`'s `--no-cache` path.
+
+    Use `rebuild` when:
+      - Pinning down a build-cache poisoning issue
+      - Verifying a clean install from scratch
+      - The Dockerfile itself changed (base image, system deps, pip
+        constraints) — `--no-cache` invalidates everything cleanly
+
+    Use `build` (this command) when:
+      - You only touched application code under `litellm/` and want it
+        in the running container ASAP
+    """
+    _load_dotenv()
+    render_config()
+    print("[proxy] building image (cached)...", file=sys.stderr)
+    rc = _compose("build").returncode
+    if rc != 0:
+        return rc
+    return _compose("up", "-d", "--force-recreate").returncode
+
+
 def cmd_url(_args: argparse.Namespace) -> int:
     print(_proxy_url())
     return 0
@@ -302,7 +329,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_logs.set_defaults(func=cmd_logs)
 
     sub.add_parser(
-        "rebuild", help="force image rebuild from current source"
+        "build",
+        help="cached rebuild + force-recreate (fast; prefer for source edits)",
+    ).set_defaults(func=cmd_build)
+
+    sub.add_parser(
+        "rebuild",
+        help="full --no-cache rebuild + force-recreate (slow; for Dockerfile/dep changes)",
     ).set_defaults(func=cmd_rebuild)
 
     sub.add_parser("url", help="print proxy base URL").set_defaults(func=cmd_url)
