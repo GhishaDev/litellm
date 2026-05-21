@@ -83,6 +83,9 @@ jobs:
           push: true
           platforms: linux/amd64
           provenance: false
+          build-args: |
+            LITELLM_BUILD_TAG=${{ steps.version.outputs.tag }}
+            LITELLM_BUILD_SHA=${{ steps.version.outputs.git_sha }}
           tags: |
             ${{ env.SWR_REGISTRY }}/${{ env.SWR_ORG }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
             ${{ env.SWR_REGISTRY }}/${{ env.SWR_ORG }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-${{ steps.version.outputs.git_sha }}
