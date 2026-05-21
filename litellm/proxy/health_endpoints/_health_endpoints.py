@@ -1246,6 +1246,7 @@ async def health_readiness():
     """
     Unprotected endpoint for checking if worker can receive requests
     """
+    from litellm._version import build_base_version, build_sha
     from litellm.proxy.proxy_server import prisma_client, version
 
     try:
@@ -1290,6 +1291,8 @@ async def health_readiness():
                 "db": db_health_status["status"],
                 "cache": cache_type,
                 "litellm_version": version,
+                "litellm_base_version": build_base_version,
+                "litellm_build_sha": build_sha,
                 "success_callbacks": success_callback_names,
                 "use_aiohttp_transport": AsyncHTTPHandler._should_use_aiohttp_transport(),
                 "log_level": log_level_name,
@@ -1301,6 +1304,8 @@ async def health_readiness():
                 "db": "Not connected",
                 "cache": cache_type,
                 "litellm_version": version,
+                "litellm_base_version": build_base_version,
+                "litellm_build_sha": build_sha,
                 "success_callbacks": success_callback_names,
                 "use_aiohttp_transport": AsyncHTTPHandler._should_use_aiohttp_transport(),
                 "log_level": log_level_name,
