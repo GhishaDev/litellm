@@ -1474,6 +1474,7 @@ async def _get_health_readiness_details(
     """
     Detailed health payload for authenticated diagnostics.
     """
+    from litellm._version import build_base_version, build_sha
     from litellm.proxy.proxy_server import prisma_client, version
 
     try:
@@ -1525,6 +1526,8 @@ async def _get_health_readiness_details(
                 "db": db_health_status["status"],
                 "cache": cache_type,
                 "litellm_version": version,
+                "litellm_base_version": build_base_version,
+                "litellm_build_sha": build_sha,
                 "success_callbacks": success_callback_names,
                 "use_aiohttp_transport": AsyncHTTPHandler._should_use_aiohttp_transport(),
                 "log_level": log_level_name,
@@ -1536,6 +1539,8 @@ async def _get_health_readiness_details(
                 "db": "Not connected",
                 "cache": cache_type,
                 "litellm_version": version,
+                "litellm_base_version": build_base_version,
+                "litellm_build_sha": build_sha,
                 "success_callbacks": success_callback_names,
                 "use_aiohttp_transport": AsyncHTTPHandler._should_use_aiohttp_transport(),
                 "log_level": log_level_name,

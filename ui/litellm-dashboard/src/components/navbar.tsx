@@ -6,7 +6,7 @@ import { clearTokenCookies } from "@/utils/cookieUtils";
 import { clearStoredReturnUrl } from "@/utils/returnUrlUtils";
 import { fetchProxySettings } from "@/utils/proxyUtils";
 import { MenuFoldOutlined, MenuUnfoldOutlined, MoonOutlined, SunOutlined } from "@ant-design/icons";
-import { Button, Switch, Tag } from "antd";
+import { Button, Switch, Tag, Tooltip } from "antd";
 import Link from "next/link";
 import React, { useEffect, useState } from "react";
 import { BlogDropdown } from "./Navbar/BlogDropdown/BlogDropdown";
@@ -48,6 +48,11 @@ const Navbar: React.FC<NavbarProps> = ({
   const { logoUrl } = useTheme();
   const { data: healthData } = useHealthReadinessDetails(accessToken);
   const version = healthData?.litellm_version;
+  const baseVersion = healthData?.litellm_base_version;
+  const buildSha = healthData?.litellm_build_sha;
+  // Only show the tooltip when the running build differs from the upstream
+  // base (i.e. an internal release) or when a build sha was injected.
+  const hasBuildInfo = Boolean(buildSha) || (baseVersion && baseVersion !== version);
   const disableBouncingIcon = useDisableBouncingIcon();
 
   // Simple logo URL: use custom logo if available, otherwise default
@@ -124,16 +129,29 @@ const Navbar: React.FC<NavbarProps> = ({
                       🌑
                     </span>
                   )}
-                  <Tag className="relative text-xs font-medium cursor-pointer z-10">
-                    <a
-                      href="https://docs.litellm.ai/release_notes"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex-shrink-0"
-                    >
-                      v{version}
-                    </a>
-                  </Tag>
+                  <Tooltip
+                    title={
+                      hasBuildInfo ? (
+                        <div className="text-xs">
+                          {baseVersion && <div>Upstream base: v{baseVersion}</div>}
+                          {buildSha && <div>Build sha: {buildSha}</div>}
+                        </div>
+                      ) : (
+                        ""
+                      )
+                    }
+                  >
+                    <Tag className="relative text-xs font-medium cursor-pointer z-10">
+                      <a
+                        href="https://docs.litellm.ai/release_notes"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex-shrink-0"
+                      >
+                        v{version}
+                      </a>
+                    </Tag>
+                  </Tooltip>
                 </div>
               )}
             </div>

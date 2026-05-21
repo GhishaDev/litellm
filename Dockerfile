@@ -81,7 +81,16 @@ RUN apk add --no-cache bash openssl tzdata nodejs npm python3 libsndfile && \
     { apk del --no-cache npm 2>/dev/null || true; }
 
 WORKDIR /app
-ENV PATH="/app/.venv/bin:${PATH}"
+
+# Build-time identity, injected by CI (.github/workflows/release-docker.yml).
+# LITELLM_BUILD_TAG e.g. "v1.83.10-internal.5" — exposed via /health/readiness
+# and the UI navbar so operators can tell internal releases apart at a glance
+# without mutating pyproject.toml.
+ARG LITELLM_BUILD_TAG=""
+ARG LITELLM_BUILD_SHA=""
+ENV PATH="/app/.venv/bin:${PATH}" \
+    LITELLM_BUILD_TAG=${LITELLM_BUILD_TAG} \
+    LITELLM_BUILD_SHA=${LITELLM_BUILD_SHA}
 
 COPY --from=builder /app /app
 # Prisma binaries live in $HOME/.cache (default prisma-python location),
