@@ -23,6 +23,7 @@ Humans can execute them too — every step is a concrete shell command.
 | 11 | `11_error_information_message_populated.md` | (none — invalid key) | `spend_logs.metadata.error_information.error_message` non-empty on failure | ✓ |
 | 12 | `12_custom_pricing_must_honor_cache_tokens.md` | (none — direct calc) | `custom_cost_per_token` short-circuit must include cache pricing (Bug #2 root cause) | — |
 | 16 | `16_budget_reset_no_prisma_error.md` | (none — proxy only) | `ResetBudgetJob.reset_budget_windows` background tick must not raise `prisma.errors.MissingRequiredValueError` on `Json?` null-filter. Regression for BerriAI/litellm#26346 | ✓ |
+| 18 | `18_public_req_middleware.md` | Anthropic | `litellm_extras.PublicReqMiddleware` keeps streaming responses incremental, strips `x-litellm-*` under `X-Public-Req: 1`, and rejects sensitive `/v1/models` query params | — |
 
 ## How to invoke
 
