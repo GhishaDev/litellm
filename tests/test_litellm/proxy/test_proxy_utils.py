@@ -582,3 +582,196 @@ async def test_apply_user_models_filter_get_user_object_raises_skips_filter(
         user_api_key_cache=DualCache(),
     )
     assert result == ["m1", "m2"]
+
+
+# -----------------------------------------------------------------------------
+# apply_user_models_filter_to_deployments — deployment-shaped variant used by
+# /v1/model/info and /v2/model/info. Defense-in-depth wrapper around
+# _apply_user_models_filter; the underlying semantics are exercised above, so
+# these tests focus on the wrapper's own responsibilities:
+#   1. extract distinct model_name from List[Dict]
+#   2. respect order + duplicates when filtering
+#   3. pass-through fast path when filter doesn't narrow
+# -----------------------------------------------------------------------------
+
+
+def _deployment(model_name, **extra):
+    """Minimal deployment-dict stand-in matching what router.model_list yields."""
+    return {"model_name": model_name, **extra}
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_to_deployments_no_user_id_passthrough(
+    monkeypatch,
+):
+    """Master key (user_id=None) -> wrapper returns input untouched."""
+    from litellm.proxy import utils as proxy_utils
+
+    UAK = _make_dict()
+
+    deployments = [
+        _deployment("m1"),
+        _deployment("m2", litellm_params={"api_base": "x"}),
+    ]
+    result = await proxy_utils.apply_user_models_filter_to_deployments(
+        deployments=deployments,
+        user_api_key_dict=UAK(user_id=None),
+        llm_router=None,
+        prisma_client=None,
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert [d["model_name"] for d in result] == ["m1", "m2"]
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_to_deployments_empty_input():
+    """Empty input -> empty output, no DB call needed."""
+    from litellm.proxy import utils as proxy_utils
+
+    UAK = _make_dict()
+    result = await proxy_utils.apply_user_models_filter_to_deployments(
+        deployments=[],
+        user_api_key_dict=UAK(user_id="u1"),
+        llm_router=None,
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_to_deployments_narrows_by_user_models(
+    monkeypatch,
+):
+    """user.models=['m1'] -> only deployments named m1 survive, order preserved."""
+    from litellm.proxy import utils as proxy_utils
+    from litellm.proxy._types import LiteLLM_UserTable
+
+    UAK = _make_dict()
+
+    async def _user(*args, **kwargs):
+        return LiteLLM_UserTable(
+            user_id="u1", max_budget=None, user_email=None, models=["m1"]
+        )
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _user,
+    )
+
+    deployments = [
+        _deployment("m2", litellm_params={"api_base": "https://m2.example"}),
+        _deployment("m1", litellm_params={"api_base": "https://m1-a.example"}),
+        _deployment("m1", litellm_params={"api_base": "https://m1-b.example"}),
+    ]
+    result = await proxy_utils.apply_user_models_filter_to_deployments(
+        deployments=deployments,
+        user_api_key_dict=UAK(user_id="u1"),
+        llm_router=None,
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert [d["model_name"] for d in result] == ["m1", "m1"]
+    assert [d["litellm_params"]["api_base"] for d in result] == [
+        "https://m1-a.example",
+        "https://m1-b.example",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_to_deployments_no_default_models_returns_empty(
+    monkeypatch,
+):
+    """user.models=['no-default-models'] sentinel -> empty list."""
+    from litellm.proxy import utils as proxy_utils
+    from litellm.proxy._types import LiteLLM_UserTable
+
+    UAK = _make_dict()
+
+    async def _user(*args, **kwargs):
+        return LiteLLM_UserTable(
+            user_id="u1", max_budget=None, user_email=None, models=["no-default-models"]
+        )
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _user,
+    )
+
+    deployments = [_deployment("m1"), _deployment("m2")]
+    result = await proxy_utils.apply_user_models_filter_to_deployments(
+        deployments=deployments,
+        user_api_key_dict=UAK(user_id="u1"),
+        llm_router=None,
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_to_deployments_empty_user_models_passthrough(
+    monkeypatch,
+):
+    """user.models=[] (unrestricted) -> input returned untouched."""
+    from litellm.proxy import utils as proxy_utils
+    from litellm.proxy._types import LiteLLM_UserTable
+
+    UAK = _make_dict()
+
+    async def _user(*args, **kwargs):
+        return LiteLLM_UserTable(
+            user_id="u1", max_budget=None, user_email=None, models=[]
+        )
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _user,
+    )
+
+    deployments = [_deployment("m1"), _deployment("m2"), _deployment("m3")]
+    result = await proxy_utils.apply_user_models_filter_to_deployments(
+        deployments=deployments,
+        user_api_key_dict=UAK(user_id="u1"),
+        llm_router=None,
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert [d["model_name"] for d in result] == ["m1", "m2", "m3"]
+
+
+@pytest.mark.asyncio
+async def test_apply_user_models_filter_to_deployments_skips_missing_model_name(
+    monkeypatch,
+):
+    """Defensive: deployment missing 'model_name' must not crash; it's filtered out."""
+    from litellm.proxy import utils as proxy_utils
+    from litellm.proxy._types import LiteLLM_UserTable
+
+    UAK = _make_dict()
+
+    async def _user(*args, **kwargs):
+        return LiteLLM_UserTable(
+            user_id="u1", max_budget=None, user_email=None, models=["m1"]
+        )
+
+    monkeypatch.setattr(
+        "litellm.proxy.auth.auth_checks.get_user_object",
+        _user,
+    )
+
+    deployments = [_deployment("m1"), {"litellm_params": {"api_base": "anonymous"}}]
+    result = await proxy_utils.apply_user_models_filter_to_deployments(
+        deployments=deployments,
+        user_api_key_dict=UAK(user_id="u1"),
+        llm_router=None,
+        prisma_client=MagicMock(),
+        proxy_logging_obj=None,
+        user_api_key_cache=DualCache(),
+    )
+    assert [d.get("model_name") for d in result] == ["m1"]

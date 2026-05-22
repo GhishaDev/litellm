@@ -357,6 +357,21 @@ case_16() {
     fi
 }
 
+# ------------------------------------------------------------------ 17
+case_17() {
+    echo "[17] /v1/model/info + /v2/model/info honor user.models..."
+    local out=/tmp/e2e_case17.out
+    bash e2e/cases/data/17_model_info_user_filter.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "17 model-info-user-filter: $(grep -m1 PASS "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "17 model-info-user-filter" "$(grep -m1 SKIP "$out")"
+    else
+        fail "17 model-info-user-filter" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # Pre-flight: proxy must be ready
 if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
         "$PROXY/health/readiness" 2>/dev/null | grep -q '^2'; then
@@ -397,6 +412,7 @@ fi
 case_12
 case_15
 case_16
+case_17
 
 echo
 echo "============ SUMMARY ============"
