@@ -26,6 +26,7 @@ Humans can execute them too — every step is a concrete shell command.
 | 14 | `14_anthropic_response_usage_shape.md` | Anthropic | non-streaming `/v1/messages` `usage` matches Anthropic spec (no OpenAI-flavored `total_tokens`); streaming + `/v1/chat/completions` shapes unchanged | — |
 | 15 | `15_v1_models_user_filter.md` | (none — proxy only) | `GET /v1/models` honors `LiteLLM_UserTable.models` (Personal Models). Regression for BerriAI/litellm#26420 | ✓ |
 | 16 | `16_budget_reset_no_prisma_error.md` | (none — proxy only) | `ResetBudgetJob.reset_budget_windows` background tick must not raise `prisma.errors.MissingRequiredValueError` on `Json?` null-filter. Regression for BerriAI/litellm#26346 | ✓ |
+| 17 | `17_model_info_user_filter.md` | (none — proxy only) | `GET /v1/model/info` (Path B) and `GET /v2/model/info` (every flag combo) honor `LiteLLM_UserTable.models`. Extends PR #10 fix from `/v1/models` to the two info endpoints | ✓ |
 
 ## How to invoke
 
