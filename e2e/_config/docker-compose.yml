@@ -70,6 +70,13 @@ services:
       # Rendered at proxy-start time by `e2e/tools/proxy` from .env values.
       # See ../tools/proxy `render_config()`. The file is gitignored.
       - ./.litellm.rendered.yaml:/app/config.yaml:ro
+    # Invoke the internal entrypoint wrapper so PublicReqMiddleware is
+    # installed before the LiteLLM CLI starts uvicorn. Without this, the
+    # X-Public-Req gating in litellm_extras/ never runs.
+    entrypoint:
+      - python
+      - -m
+      - litellm_extras.entrypoint
     command:
       - --config=/app/config.yaml
       - --port=4000

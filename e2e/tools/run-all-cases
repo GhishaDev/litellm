@@ -372,6 +372,21 @@ case_17() {
     fi
 }
 
+# ------------------------------------------------------------------ 18
+case_18() {
+    echo "[18] X-Public-Req middleware streaming + header/query gating..."
+    local out=/tmp/e2e_case18.out
+    bash e2e/cases/data/18_public_req_middleware.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "18 public-req-middleware: $(grep -c '^PASS' "$out") assertions PASS"
+    elif [ "$rc" -eq 77 ]; then
+        skip "18 public-req-middleware" "$(grep -m1 SKIP "$out")"
+    else
+        fail "18 public-req-middleware" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # Pre-flight: proxy must be ready
 if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
         "$PROXY/health/readiness" 2>/dev/null | grep -q '^2'; then
@@ -413,6 +428,11 @@ case_12
 case_15
 case_16
 case_17
+if [ "$SKIP_PAID" -eq 1 ]; then
+    skip "18 public-req-middleware" "skipped (--skip-paid)"
+else
+    case_18
+fi
 
 echo
 echo "============ SUMMARY ============"
