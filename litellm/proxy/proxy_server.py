@@ -5862,7 +5862,15 @@ def _get_client_requested_model_for_streaming(request_data: dict) -> str:
 
     Pre-call processing can rewrite `request_data["model"]` for aliasing/routing purposes.
     The OpenAI-compatible public `model` field should reflect what the client sent.
+
+    A per-deployment ``litellm_params.returned_model_name`` override (resolved
+    upstream into ``_litellm_returned_model_name``) takes priority — gateways
+    set that when they want to hide upstream / alias identifiers entirely.
     """
+    returned_override = request_data.get("_litellm_returned_model_name")
+    if isinstance(returned_override, str) and returned_override.strip():
+        return returned_override.strip()
+
     requested_model = request_data.get("_litellm_client_requested_model")
     if isinstance(requested_model, str):
         return requested_model
@@ -5887,13 +5895,25 @@ def _restamp_streaming_chunk_model(
     if not requested_model_from_client or not isinstance(chunk, (BaseModel, dict)):
         return chunk, model_mismatch_logged
 
+    # Per-deployment `returned_model_name` override (resolved upstream into
+    # `_litellm_returned_model_name`) bypasses the Azure-Router and
+    # fastest_response preserve heuristics below: the operator has explicitly
+    # said "always return this string", so honor it on every chunk.
+    has_returned_override = bool(
+        (request_data.get("_litellm_returned_model_name") or "").strip()
+        if isinstance(request_data.get("_litellm_returned_model_name"), str)
+        else False
+    )
+
     # For Azure Model Router, preserve the actual model used in each chunk
-    if _is_azure_model_router_request(requested_model_from_client):
+    if not has_returned_override and _is_azure_model_router_request(
+        requested_model_from_client
+    ):
         return chunk, model_mismatch_logged
 
     # For fastest_response batch completions, preserve the winning model's name
     # instead of stamping the comma-separated list the client sent.
-    if request_data.get("fastest_response", False):
+    if not has_returned_override and request_data.get("fastest_response", False):
         return chunk, model_mismatch_logged
 
     downstream_model = (

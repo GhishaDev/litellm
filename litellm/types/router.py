@@ -205,6 +205,14 @@ class GenericLiteLLMParams(CredentialLiteLLMParams, CustomPricingLiteLLMParams):
     merge_reasoning_content_in_choices: Optional[bool] = False
     model_info: Optional[Dict] = None
     mock_response: Optional[Union[str, ModelResponse, Exception, Any]] = None
+    # Per-deployment override for the `model` field returned to the client.
+    # When set, every response (streaming + non-streaming, OpenAI + Anthropic
+    # /v1/messages) carries this literal string in `model` (and
+    # message_start.message.model for Anthropic SSE) instead of the
+    # client-requested name or the upstream model id. Gateways use this to
+    # hide upstream model identifiers from external clients regardless of
+    # the routing alias the client sent.
+    returned_model_name: Optional[str] = None
 
     # tag-based routing
     tags: Optional[List[str]] = None
