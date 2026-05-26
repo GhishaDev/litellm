@@ -301,6 +301,9 @@ disable_add_transform_inline_image_block: bool = False
 disable_add_user_agent_to_request_tags: bool = False
 disable_anthropic_gemini_context_caching_transform: bool = False
 disable_vertex_batch_output_transformation: bool = False
+anthropic_strip_thinking_on_signature_error: bool = (
+    False  # when True, /v1/messages strips thinking blocks and retries on Anthropic 400 'Invalid signature in thinking block'; default off so the 400 propagates and routing/key issues stay visible
+)
 extra_spend_tag_headers: Optional[List[str]] = None
 in_memory_llm_clients_cache: "LLMClientCache"
 safe_memory_mode: bool = False

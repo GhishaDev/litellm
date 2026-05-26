@@ -668,6 +668,23 @@ class LiteLLMProxyRequestSetup:
         return None
 
     @staticmethod
+    def _get_strip_thinking_on_signature_error_from_request(
+        headers: dict,
+    ) -> Optional[bool]:
+        """
+        Per-request override for the Anthropic invalid-thinking-signature retry.
+
+        Returns True/False when the ``x-litellm-strip-thinking-on-signature-error``
+        header is set, else None so the module / proxy-config default applies.
+        When True, /v1/messages strips thinking blocks and retries on an Anthropic
+        400 'Invalid signature in thinking block' instead of propagating the error.
+        """
+        raw = headers.get("x-litellm-strip-thinking-on-signature-error", None)
+        if raw is None:
+            return None
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+    @staticmethod
     def _get_spend_logs_metadata_from_request_headers(headers: dict) -> Optional[dict]:
         """
         Get the `spend_logs_metadata` from the request headers.
@@ -908,6 +925,14 @@ class LiteLLMProxyRequestSetup:
         num_retries = LiteLLMProxyRequestSetup._get_num_retries_from_request(headers)
         if num_retries is not None:
             data["num_retries"] = num_retries
+
+        strip_thinking_on_signature_error = LiteLLMProxyRequestSetup._get_strip_thinking_on_signature_error_from_request(
+            headers
+        )
+        if strip_thinking_on_signature_error is not None:
+            data["strip_thinking_on_signature_error"] = (
+                strip_thinking_on_signature_error
+            )
 
         return data
 

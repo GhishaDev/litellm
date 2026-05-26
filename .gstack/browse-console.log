@@ -1,0 +1,211 @@
+[2026-06-03T07:24:08.077Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-06-03T07:24:48.271Z] [error] Error decoding token: InvalidTokenError: Invalid token specified: missing part #2
+    at r (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/6a0fd05cc4ab959b.js:98:125883)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/62b240881d1b6a32.js:72:93300
+    at av (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:63258)
+    at oY (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:83531)
+    at io (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:94963)
+    at sc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:137984)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:137829
+    at ss (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:137837)
+    at u9 (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:132981)
+    at sH (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:159478)
+[2026-06-03T07:25:19.851Z] [warning] The resource http://localhost:4011/litellm-asset-prefix/_next/static/media/83afe278b6a6bb3c-s.p.3a6ba036.woff2 was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally.
+[2026-06-03T07:25:32.347Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-06-03T07:25:35.435Z] [warning] The resource http://localhost:4011/litellm-asset-prefix/_next/static/media/83afe278b6a6bb3c-s.p.3a6ba036.woff2 was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally.
+[2026-06-03T07:26:02.301Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-06-03T07:26:05.386Z] [warning] The resource http://localhost:4011/litellm-asset-prefix/_next/static/media/83afe278b6a6bb3c-s.p.3a6ba036.woff2 was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally.
+[2026-06-03T07:26:14.628Z] [warning] The resource http://localhost:4011/litellm-asset-prefix/_next/static/media/83afe278b6a6bb3c-s.p.3a6ba036.woff2 was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally.
+[2026-06-03T07:27:07.258Z] [warning] The resource http://localhost:4011/litellm-asset-prefix/_next/static/media/83afe278b6a6bb3c-s.p.3a6ba036.woff2 was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally.
+[2026-06-03T07:27:19.692Z] [error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[2026-06-03T07:27:22.791Z] [warning] The resource http://localhost:4011/litellm-asset-prefix/_next/static/media/83afe278b6a6bb3c-s.p.3a6ba036.woff2 was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally.
+[2026-06-03T07:28:36.541Z] [error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-06-03T07:28:36.541Z] [error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-06-03T07:28:36.543Z] [error] Failed to fetch license info: Error: Network response was not ok
+    at ox (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:100938)
+    at async Promise.all (index 1)
+    at async http://localhost:4011/litellm-asset-prefix/_next/static/chunks/0a240f3b9f7eb75f.js:1:22016
+[2026-06-03T07:28:36.544Z] [error] Failed to fetch remaining users: Error: Network response was not ok
+    at oC (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:100611)
+    at async Promise.all (index 0)
+    at async http://localhost:4011/litellm-asset-prefix/_next/static/chunks/0a240f3b9f7eb75f.js:1:22016
+[2026-06-03T07:28:36.544Z] [error] Failed to fetch usage data: Error: Network response was not ok
+    at oC (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:100611)
+    at async Promise.all (index 0)
+    at async http://localhost:4011/litellm-asset-prefix/_next/static/chunks/0a240f3b9f7eb75f.js:1:22016
+[2026-06-03T07:28:36.545Z] [error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-06-03T07:28:36.546Z] [error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-06-03T07:28:36.548Z] [error] Failed to create key: Error: Authentication Error, Invalid proxy server token passed. Received API Key = sk-...XXXX, Key Hash (Token) =700327eee00a87503de70dcee30f3694dc5cf60cff0189ef07644d24b4614538. Unable to find token in cache or `LiteLLM_VerificationTokenTable`
+    at em (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:16432)
+    at async a (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/b18c9c2cb04f232f.js:1:25110)
+    at async queryFn (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/b18c9c2cb04f232f.js:1:28133)
+[2026-06-03T07:28:36.549Z] [error] Failed to create key: Error: Authentication Error, Invalid proxy server token passed. Received API Key = sk-...XXXX, Key Hash (Token) =700327eee00a87503de70dcee30f3694dc5cf60cff0189ef07644d24b4614538. Unable to find token in cache or `LiteLLM_VerificationTokenTable`
+    at ev (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:17301)
+    at async queryFn (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/b18c9c2cb04f232f.js:1:22725)
+[2026-06-03T07:28:36.577Z] [error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-06-03T07:28:36.608Z] [error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-06-03T07:28:36.611Z] [error] Failed to list teams: TypeError: Failed to fetch
+    at d (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/b18c9c2cb04f232f.js:1:25705)
+    at K (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:21319)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:21564
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+[2026-06-03T07:28:36.615Z] [error] Failed to get guardrails list: TypeError: Failed to fetch
+    at tU (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:56567)
+    at async http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:22946
+[2026-06-03T07:28:36.615Z] [error] Failed to get callbacks: TypeError: Failed to fetch
+[2026-06-03T07:28:36.615Z] [error] Failed to create key: TypeError: Failed to fetch
+    at ev (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:17165)
+    at ed (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/89034a1473717ab9.js:1:13829)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:156635
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126999)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+[2026-06-03T07:28:36.615Z] [error] Failed to fetch MCP access groups: TypeError: Failed to fetch
+    at rj (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:75501)
+    at eJ (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:23170)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:23266
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+[2026-06-03T07:28:36.615Z] [error] Failed to create key: TypeError: Failed to fetch
+    at eG (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:27031)
+    at ei (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/b18c9c2cb04f232f.js:1:93803)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:156462
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126999)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+[2026-06-03T07:28:36.615Z] [error] Failed to create key: TypeError: Failed to fetch
+    at eG (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:27031)
+    at r (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/f4d1949f60a5a018.js:1:30089)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:23827
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:23902
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+[2026-06-03T07:28:36.615Z] [error] Failed to get policies list: TypeError: Failed to fetch
+    at tQ (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:59716)
+    at e (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:22808)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:23083
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+[2026-06-03T07:28:36.615Z] [error] Failed to get in-product nudges: TypeError: Failed to fetch
+    at $ (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:608)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:156736
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:156860
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126999)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+[2026-06-03T07:28:36.615Z] [error] Failed to list teams: TypeError: Failed to fetch
+    at d (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/b18c9c2cb04f232f.js:1:25705)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:156502
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126999)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126032)
+[2026-06-03T07:28:36.615Z] [error] Failed to fetch guardrails: TypeError: Failed to fetch
+    at tU (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:56567)
+    at async http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:22946
+[2026-06-03T07:28:36.616Z] [error] Error fetching proxy settings: TypeError: Failed to fetch
+[2026-06-03T07:28:36.616Z] [error] Failed to fetch MCP access groups: TypeError: Failed to fetch
+    at rj (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:75501)
+    at eJ (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:23170)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:23266
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+[2026-06-03T07:28:36.616Z] [error] Error fetching user models: TypeError: Failed to fetch
+    at eG (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:27031)
+    at ei (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/b18c9c2cb04f232f.js:1:93803)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:156462
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126999)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+[2026-06-03T07:28:36.617Z] [error] Error fetching user models: TypeError: Failed to fetch
+    at eG (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:27031)
+    at r (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/f4d1949f60a5a018.js:1:30089)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:23827
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:23902
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+[2026-06-03T07:28:36.617Z] [error] Failed to fetch policies: TypeError: Failed to fetch
+    at tQ (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:59716)
+    at e (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:22808)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:23083
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+[2026-06-03T07:28:36.617Z] [error] Failed to fetch in-product nudges: TypeError: Failed to fetch
+    at $ (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/08c0504a8b40be58.js:98:608)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:156736
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:156860
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126999)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+[2026-06-03T07:28:36.617Z] [error] TypeError: Failed to fetch
+    at d (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/b18c9c2cb04f232f.js:1:25705)
+    at http://localhost:4011/litellm-asset-prefix/_next/static/chunks/3a50c1cde5b4e762.js:231:156502
+    at ih (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:102202)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126052)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126999)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126097)
+    at uc (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:125714)
+    at uf (http://localhost:4011/litellm-asset-prefix/_next/static/chunks/726579f2940c2a2f.js:1:126032)
+[2026-06-03T07:28:40.835Z] [warning] The resource http://localhost:4011/litellm-asset-prefix/_next/static/media/83afe278b6a6bb3c-s.p.3a6ba036.woff2 was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally.
+[2026-06-03T07:29:31.914Z] [error] Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-06-03T07:29:34.914Z] [warning] The resource http://localhost:4011/litellm-asset-prefix/_next/static/media/83afe278b6a6bb3c-s.p.3a6ba036.woff2 was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally.
