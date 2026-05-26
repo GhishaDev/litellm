@@ -22,12 +22,152 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from litellm.proxy.common_request_processing import (  # noqa: E402
     ProxyBaseLLMRequestProcessing,
     _override_openai_response_model,
+    _resolve_returned_model_name,
 )
 from litellm.proxy.proxy_server import (  # noqa: E402
     _get_client_requested_model_for_streaming,
     _restamp_streaming_chunk_model,
 )
 from litellm.types.router import GenericLiteLLMParams  # noqa: E402
+
+
+class _FakeDeployment:
+    """Stand-in for the Deployment object returned by Router.get_deployment.
+    Mirrors both the attribute-style (typical) and dict-style (rare)
+    `litellm_params` containers the resolver supports."""
+
+    def __init__(self, litellm_params):
+        self.litellm_params = litellm_params
+
+
+class _FakeRouter:
+    """Minimal Router stub: returns a configured deployment for any
+    model_id; behavior on lookup failure is controlled via `raise_exc`."""
+
+    def __init__(self, deployment=None, raise_exc: bool = False):
+        self._deployment = deployment
+        self._raise_exc = raise_exc
+
+    def get_deployment(self, *, model_id):
+        if self._raise_exc:
+            raise RuntimeError("router lookup blew up")
+        return self._deployment
+
+
+class _FakeLitellmParams:
+    """Object-style litellm_params (the common case — Pydantic model)."""
+
+    def __init__(self, **kw):
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+
+class TestResolveReturnedModelName:
+    """`_resolve_returned_model_name` extracts the per-deployment override.
+
+    Empty/whitespace must return None so a misconfigured
+    `returned_model_name: ""` in YAML falls back to the client-requested
+    name (preserves OpenAI-compatible clients that reject `model=""`).
+    """
+
+    # ---- happy path ------------------------------------------------------
+    def test_object_style_litellm_params(self):
+        router = _FakeRouter(
+            _FakeDeployment(_FakeLitellmParams(returned_model_name="public-name"))
+        )
+        assert (
+            _resolve_returned_model_name(llm_router=router, model_id="id-1")
+            == "public-name"
+        )
+
+    def test_dict_style_litellm_params(self):
+        router = _FakeRouter(_FakeDeployment({"returned_model_name": "public-name"}))
+        assert (
+            _resolve_returned_model_name(llm_router=router, model_id="id-1")
+            == "public-name"
+        )
+
+    def test_dict_style_deployment(self):
+        """Some code paths surface deployment as a dict; resolver must
+        still find litellm_params inside it."""
+        router = _FakeRouter({"litellm_params": {"returned_model_name": "public-name"}})
+        assert (
+            _resolve_returned_model_name(llm_router=router, model_id="id-1")
+            == "public-name"
+        )
+
+    def test_strips_surrounding_whitespace(self):
+        router = _FakeRouter(
+            _FakeDeployment(_FakeLitellmParams(returned_model_name="  public-name  "))
+        )
+        assert (
+            _resolve_returned_model_name(llm_router=router, model_id="id-1")
+            == "public-name"
+        )
+
+    # ---- empty / whitespace = unset -------------------------------------
+    def test_empty_string_returns_none(self):
+        """The whole point: YAML `returned_model_name: ""` must NOT cause
+        `model=""` on the wire — resolver returns None so caller falls back."""
+        router = _FakeRouter(
+            _FakeDeployment(_FakeLitellmParams(returned_model_name=""))
+        )
+        assert _resolve_returned_model_name(llm_router=router, model_id="id-1") is None
+
+    def test_whitespace_only_returns_none(self):
+        router = _FakeRouter(
+            _FakeDeployment(_FakeLitellmParams(returned_model_name="   \t  "))
+        )
+        assert _resolve_returned_model_name(llm_router=router, model_id="id-1") is None
+
+    def test_explicit_none_returns_none(self):
+        router = _FakeRouter(
+            _FakeDeployment(_FakeLitellmParams(returned_model_name=None))
+        )
+        assert _resolve_returned_model_name(llm_router=router, model_id="id-1") is None
+
+    def test_non_string_returns_none(self):
+        """A YAML scalar that parses to int / bool / list shouldn't trip
+        the override on — fall back to client-requested name."""
+        router = _FakeRouter(
+            _FakeDeployment(_FakeLitellmParams(returned_model_name=123))
+        )
+        assert _resolve_returned_model_name(llm_router=router, model_id="id-1") is None
+
+    # ---- absent field / container ---------------------------------------
+    def test_field_absent_returns_none(self):
+        router = _FakeRouter(
+            _FakeDeployment(_FakeLitellmParams())  # no returned_model_name
+        )
+        assert _resolve_returned_model_name(llm_router=router, model_id="id-1") is None
+
+    def test_litellm_params_absent_returns_none(self):
+        class _DepNoParams:
+            pass
+
+        router = _FakeRouter(_DepNoParams())
+        assert _resolve_returned_model_name(llm_router=router, model_id="id-1") is None
+
+    def test_deployment_none_returns_none(self):
+        router = _FakeRouter(deployment=None)
+        assert _resolve_returned_model_name(llm_router=router, model_id="id-1") is None
+
+    # ---- pre-flight guards -----------------------------------------------
+    def test_no_router_returns_none(self):
+        assert _resolve_returned_model_name(llm_router=None, model_id="id-1") is None
+
+    def test_no_model_id_returns_none(self):
+        router = _FakeRouter(
+            _FakeDeployment(_FakeLitellmParams(returned_model_name="public-name"))
+        )
+        assert _resolve_returned_model_name(llm_router=router, model_id="") is None
+        assert _resolve_returned_model_name(llm_router=router, model_id=None) is None
+
+    def test_router_lookup_exception_returns_none(self):
+        """A buggy / unconfigured router must not raise into the request
+        path — resolver swallows and falls back to default behavior."""
+        router = _FakeRouter(raise_exc=True)
+        assert _resolve_returned_model_name(llm_router=router, model_id="id-1") is None
 
 
 class TestGenericLiteLLMParamsField:
