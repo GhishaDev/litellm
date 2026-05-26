@@ -322,6 +322,57 @@ def _is_azure_model_router_request(model: str) -> bool:
     return "model-router" in model_lower or "model_router" in model_lower
 
 
+def _resolve_returned_model_name(
+    *,
+    llm_router: Any,
+    model_id: Optional[str],
+) -> Optional[str]:
+    """
+    Resolve the deployment-level ``returned_model_name`` literal for the
+    deployment that handled this request.
+
+    Returns the stripped string when the deployment configures a non-empty
+    ``litellm_params.returned_model_name``; ``None`` otherwise (no router,
+    missing model_id, deployment lookup failure, field absent, or
+    empty / whitespace value).
+
+    Source is ``llm_router.get_deployment(model_id).litellm_params`` —
+    ``logging_obj.litellm_params`` would seem simpler but arbitrary
+    deployment litellm_params fields aren't reliably mirrored there.
+    Empty / whitespace counts as unset so a misconfigured
+    ``returned_model_name: ""`` falls back to the client-requested name
+    instead of returning ``model=""`` (which breaks OpenAI-compatible
+    clients).
+    """
+    if llm_router is None or not model_id:
+        return None
+    try:
+        deployment = llm_router.get_deployment(model_id=model_id)
+    except Exception as e:
+        verbose_proxy_logger.debug(
+            "returned_model_name lookup: get_deployment failed for model_id=%s: %s",
+            model_id,
+            e,
+        )
+        return None
+    if deployment is None:
+        return None
+    dep_params = getattr(deployment, "litellm_params", None)
+    if dep_params is None and isinstance(deployment, dict):
+        dep_params = deployment.get("litellm_params")
+    if dep_params is None:
+        return None
+    raw = (
+        dep_params.get("returned_model_name")
+        if isinstance(dep_params, dict)
+        else getattr(dep_params, "returned_model_name", None)
+    )
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    return stripped if stripped else None
+
+
 def _override_openai_response_model(
     *,
     response_obj: Any,
@@ -1119,36 +1170,11 @@ class ProxyBaseLLMRequestProcessing:
             )
 
             # Per-deployment override for the `model` field returned to clients.
-            # Source: the deployment dict via llm_router.get_deployment(model_id).
-            # logging_obj.litellm_params would seem simpler, but arbitrary
-            # deployment litellm_params fields aren't reliably mirrored there —
-            # the router's get_deployment() returns the exact YAML-configured
-            # litellm_params dict. Empty/whitespace counts as unset so a
-            # misconfigured `returned_model_name: ""` falls back gracefully to
-            # the client-requested name instead of returning `model=""` (which
-            # breaks OpenAI-compatible clients).
-            _returned_name_raw: Any = ""
-            if llm_router is not None and model_id:
-                try:
-                    _deployment = llm_router.get_deployment(model_id=model_id)
-                    if _deployment is not None:
-                        _dep_params = getattr(_deployment, "litellm_params", None)
-                        if _dep_params is None and isinstance(_deployment, dict):
-                            _dep_params = _deployment.get("litellm_params")
-                        if _dep_params is not None:
-                            _returned_name_raw = (
-                                getattr(_dep_params, "returned_model_name", None)
-                                if not isinstance(_dep_params, dict)
-                                else _dep_params.get("returned_model_name")
-                            ) or ""
-                except Exception as _e:
-                    verbose_proxy_logger.debug(
-                        "returned_model_name lookup failed for model_id=%s: %s",
-                        model_id,
-                        _e,
-                    )
-            if isinstance(_returned_name_raw, str) and _returned_name_raw.strip():
-                self.data["_litellm_returned_model_name"] = _returned_name_raw.strip()
+            _resolved_returned_name = _resolve_returned_model_name(
+                llm_router=llm_router, model_id=model_id
+            )
+            if _resolved_returned_name:
+                self.data["_litellm_returned_model_name"] = _resolved_returned_name
 
             # Post Call Processing
             if llm_router is not None:
