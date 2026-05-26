@@ -565,6 +565,12 @@ class PrometheusLogger(CustomLogger):
                 labelnames=["error_type"],
             )
 
+            self.litellm_anthropic_thinking_signature_retry_total = self._counter_factory(
+                name="litellm_anthropic_thinking_signature_retry_total",
+                documentation="Total /v1/messages requests where an invalid Anthropic thinking signature triggered stripping thinking blocks and retrying (opt-in via anthropic_strip_thinking_on_signature_error). outcome=success|failure of the retried attempt.",
+                labelnames=["model", "outcome"],
+            )
+
             self.litellm_check_batch_cost_last_run_timestamp = self._gauge_factory(
                 "litellm_check_batch_cost_last_run_timestamp",
                 "Unix timestamp of the last CheckBatchCost job run",
@@ -1027,6 +1033,25 @@ class PrometheusLogger(CustomLogger):
         )
         counter.labels(**_labels).inc(amount)
 
+    def _increment_thinking_signature_retry(self, model: str, outcome: str) -> None:
+        """
+        Count an Anthropic /v1/messages request where an invalid thinking signature
+        forced stripping thinking blocks and retrying. Best-effort: never let metric
+        emission break the logging path.
+        """
+        counter = getattr(
+            self, "litellm_anthropic_thinking_signature_retry_total", None
+        )
+        if counter is None:
+            return
+        try:
+            counter.labels(model=model or "", outcome=outcome).inc()
+        except Exception as e:
+            verbose_logger.debug(
+                "prometheus: failed to increment thinking signature retry counter: %s",
+                e,
+            )
+
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         # Define prometheus client
         verbose_logger.debug(
@@ -1052,6 +1077,8 @@ class PrometheusLogger(CustomLogger):
             return
 
         model = kwargs.get("model", "")
+        if kwargs.get("litellm_thinking_signature_stripped"):
+            self._increment_thinking_signature_retry(model=model, outcome="success")
         litellm_params = kwargs.get("litellm_params", {}) or {}
         _metadata = litellm_params.get("metadata") or {}
         get_end_user_id_for_cost_tracking = _get_cached_end_user_id_for_cost_tracking()
@@ -1663,6 +1690,8 @@ class PrometheusLogger(CustomLogger):
             return
 
         model = kwargs.get("model", "")
+        if kwargs.get("litellm_thinking_signature_stripped"):
+            self._increment_thinking_signature_retry(model=model, outcome="failure")
 
         litellm_params = kwargs.get("litellm_params", {}) or {}
         get_end_user_id_for_cost_tracking = _get_cached_end_user_id_for_cost_tracking()
