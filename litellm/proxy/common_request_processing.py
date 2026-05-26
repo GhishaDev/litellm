@@ -597,6 +597,16 @@ class ProxyBaseLLMRequestProcessing:
                 else None
             ),
             "x-litellm-timeout": str(timeout) if timeout is not None else None,
+            "x-litellm-thinking-stripped": (
+                "true"
+                if (
+                    litellm_logging_obj is not None
+                    and getattr(litellm_logging_obj, "model_call_details", {}).get(
+                        "litellm_thinking_signature_stripped"
+                    )
+                )
+                else None
+            ),
             **{k: str(v) for k, v in kwargs.items()},
         }
         if request_data:

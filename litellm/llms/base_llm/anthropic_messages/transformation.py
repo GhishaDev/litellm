@@ -136,10 +136,28 @@ class BaseAnthropicMessagesConfig(ABC):
         """
         When True, async_anthropic_messages_handler will transform the request body
         and issue one more attempt (bounded by max_retry_on_anthropic_messages_http_error).
+
+        Off by default: an invalid thinking signature usually signals a routing /
+        key-rotation problem, and silently stripping thinking blocks both hides that
+        signal and drops reasoning context. The caller opts in via the
+        ``litellm.anthropic_strip_thinking_on_signature_error`` module flag,
+        ``litellm_settings.anthropic_strip_thinking_on_signature_error`` in the proxy
+        config, or the per-request ``x-litellm-strip-thinking-on-signature-error``
+        header (which the handler resolves into ``litellm_params``).
         """
+        import litellm
         from litellm.llms.anthropic.common_utils import (
             is_anthropic_invalid_thinking_signature_error,
         )
+
+        override = litellm_params.get("strip_thinking_on_signature_error")
+        enabled = (
+            override
+            if override is not None
+            else litellm.anthropic_strip_thinking_on_signature_error
+        )
+        if not enabled:
+            return False
 
         return (
             e.response.status_code == 400
