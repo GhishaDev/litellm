@@ -406,6 +406,20 @@ case_19() {
     fi
 }
 
+case_20() {
+    echo "[20] returned_model_name override (4 paths)..."
+    local out=/tmp/e2e_case20.out
+    bash e2e/cases/data/20_returned_model_name.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "20 returned-model-name: $(grep -c '^PASS' "$out") assertions PASS"
+    elif [ "$rc" -eq 77 ]; then
+        skip "20 returned-model-name" "$(grep -m1 SKIP "$out")"
+    else
+        fail "20 returned-model-name" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # Pre-flight: proxy must be ready
 if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
         "$PROXY/health/readiness" 2>/dev/null | grep -q '^2'; then
@@ -450,9 +464,11 @@ case_17
 if [ "$SKIP_PAID" -eq 1 ]; then
     skip "18 public-req-middleware" "skipped (--skip-paid)"
     skip "19 thinking-signature-retry" "skipped (--skip-paid)"
+    skip "20 returned-model-name" "skipped (--skip-paid)"
 else
     case_18
     case_19
+    case_20
 fi
 
 echo

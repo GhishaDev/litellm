@@ -322,11 +322,63 @@ def _is_azure_model_router_request(model: str) -> bool:
     return "model-router" in model_lower or "model_router" in model_lower
 
 
+def _resolve_returned_model_name(
+    *,
+    llm_router: Any,
+    model_id: Optional[str],
+) -> Optional[str]:
+    """
+    Resolve the deployment-level ``returned_model_name`` literal for the
+    deployment that handled this request.
+
+    Returns the stripped string when the deployment configures a non-empty
+    ``litellm_params.returned_model_name``; ``None`` otherwise (no router,
+    missing model_id, deployment lookup failure, field absent, or
+    empty / whitespace value).
+
+    Source is ``llm_router.get_deployment(model_id).litellm_params`` —
+    ``logging_obj.litellm_params`` would seem simpler but arbitrary
+    deployment litellm_params fields aren't reliably mirrored there.
+    Empty / whitespace counts as unset so a misconfigured
+    ``returned_model_name: ""`` falls back to the client-requested name
+    instead of returning ``model=""`` (which breaks OpenAI-compatible
+    clients).
+    """
+    if llm_router is None or not model_id:
+        return None
+    try:
+        deployment = llm_router.get_deployment(model_id=model_id)
+    except Exception as e:
+        verbose_proxy_logger.debug(
+            "returned_model_name lookup: get_deployment failed for model_id=%s: %s",
+            model_id,
+            e,
+        )
+        return None
+    if deployment is None:
+        return None
+    dep_params = getattr(deployment, "litellm_params", None)
+    if dep_params is None and isinstance(deployment, dict):
+        dep_params = deployment.get("litellm_params")
+    if dep_params is None:
+        return None
+    raw = (
+        dep_params.get("returned_model_name")
+        if isinstance(dep_params, dict)
+        else getattr(dep_params, "returned_model_name", None)
+    )
+    if not isinstance(raw, str):
+        return None
+    stripped = raw.strip()
+    return stripped if stripped else None
+
+
 def _override_openai_response_model(
     *,
     response_obj: Any,
     requested_model: str,
     log_context: str,
+    override_model_name: Optional[str] = None,
 ) -> None:
     """
     Force the OpenAI-compatible `model` field in the response to match what the client requested.
@@ -348,7 +400,30 @@ def _override_openai_response_model(
        that was used (e.g., gpt-5-nano-2025-08-07) instead of the router model.
     3. If this was a fastest_response batch completion, use the winning model's
        model group name instead of the comma-separated list the client sent.
+
+    ``override_model_name`` — when non-empty, bypasses every Exception above and
+    stamps this literal value. This is the resolved
+    ``litellm_params.returned_model_name`` from the deployment config. The
+    operator's explicit intent ("always return this string") trumps the
+    auto-preserve heuristics that exist for the default code path.
     """
+    if isinstance(override_model_name, str) and override_model_name.strip():
+        _force = override_model_name.strip()
+        if isinstance(response_obj, dict):
+            response_obj["model"] = _force
+        elif hasattr(response_obj, "model"):
+            try:
+                setattr(response_obj, "model", _force)
+            except Exception as e:
+                verbose_proxy_logger.error(
+                    "%s: failed to apply returned_model_name=%r on response_type=%s. error=%s",
+                    log_context,
+                    _force,
+                    type(response_obj),
+                    e,
+                )
+        return
+
     if not requested_model:
         return
 
@@ -1094,6 +1169,13 @@ class ProxyBaseLLMRequestProcessing:
                 hidden_params.get("additional_headers", {}) or {},
             )
 
+            # Per-deployment override for the `model` field returned to clients.
+            _resolved_returned_name = _resolve_returned_model_name(
+                llm_router=llm_router, model_id=model_id
+            )
+            if _resolved_returned_name:
+                self.data["_litellm_returned_model_name"] = _resolved_returned_name
+
             # Post Call Processing
             if llm_router is not None:
                 self.data["deployment"] = llm_router.get_deployment(model_id=model_id)
@@ -1312,10 +1394,12 @@ class ProxyBaseLLMRequestProcessing:
 
         # Always return the client-requested model name (not provider-prefixed internal identifiers)
         # for OpenAI-compatible responses.
-        if requested_model_from_client:
+        _returned_override = self.data.get("_litellm_returned_model_name")
+        if requested_model_from_client or _returned_override:
             _override_openai_response_model(
                 response_obj=response,
-                requested_model=requested_model_from_client,
+                requested_model=requested_model_from_client or "",
+                override_model_name=_returned_override,
                 log_context=f"litellm_call_id={logging_obj.litellm_call_id}",
             )
 
@@ -1709,6 +1793,66 @@ class ProxyBaseLLMRequestProcessing:
     #########################################################
 
     @staticmethod
+    def _rewrite_message_start_model_in_sse_bytes(
+        chunk_bytes: bytes, new_model: str
+    ) -> bytes:
+        """
+        Rewrite ``message_start.message.model`` in a raw Anthropic SSE byte
+        chunk. Used when ``litellm_params.returned_model_name`` is set on the
+        deployment — the OpenAI-style chunk restamper only touches top-level
+        ``chunk["model"]`` and would otherwise leak the upstream Anthropic
+        model id (e.g. ``claude-sonnet-4-6``) on the streaming /v1/messages
+        path.
+
+        Safe pass-through:
+        - if the chunk doesn't decode as UTF-8 → return unchanged
+        - if no ``message_start`` event appears in the chunk → return unchanged
+        - if a ``data:`` line fails to parse as JSON → leave that line alone
+          and continue with siblings
+
+        Edge case: if a single ``message_start`` event spans multiple
+        ``aiter_bytes`` chunks (rare in practice — Anthropic flushes events
+        atomically), this leaves the upstream model id intact in that chunk.
+        Stream integrity is preserved either way.
+        """
+        try:
+            text = chunk_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return chunk_bytes
+        if "message_start" not in text:
+            return chunk_bytes
+        events = text.split("\n\n")
+        modified = False
+        for idx, event in enumerate(events):
+            if "message_start" not in event:
+                continue
+            lines = event.split("\n")
+            for j, line in enumerate(lines):
+                stripped = line.lstrip()
+                if not stripped.startswith("data:"):
+                    continue
+                payload = stripped[len("data:") :].strip()
+                if not payload:
+                    continue
+                try:
+                    obj = json.loads(payload)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if (
+                    isinstance(obj, dict)
+                    and obj.get("type") == "message_start"
+                    and isinstance(obj.get("message"), dict)
+                    and "model" in obj["message"]
+                ):
+                    obj["message"]["model"] = new_model
+                    lines[j] = "data: " + json.dumps(obj)
+                    modified = True
+            events[idx] = "\n".join(lines)
+        if not modified:
+            return chunk_bytes
+        return "\n\n".join(events).encode("utf-8")
+
+    @staticmethod
     def return_sse_chunk(chunk: Any) -> str:
         """
         Helper function to format streaming chunks for Anthropic API format
@@ -1780,6 +1924,36 @@ class ProxyBaseLLMRequestProcessing:
                         chunk, model_name
                     )
                 )
+                # Per-deployment `returned_model_name` override for Anthropic
+                # /v1/messages SSE: the model name lives nested in
+                # `message_start.message.model` (not at chunk["model"] like
+                # OpenAI), so the chat-completions chunk restamper does not
+                # touch it. Other event types (content_block_*, ping,
+                # message_delta, message_stop) carry no `model` field and pass
+                # through unchanged.
+                #
+                # Anthropic chunks reach here as raw SSE bytes (from
+                # PassThroughStreamingHandler.chunk_processor's
+                # response.aiter_bytes()), so we parse the SSE frame, rewrite
+                # the nested model on `message_start` events, and re-encode.
+                # The dict branch is kept for providers that emit parsed
+                # chunks. On any parse failure the chunk passes through
+                # untouched — the upstream model id may leak in that edge
+                # case, but the stream stays intact.
+                _returned_override = request_data.get("_litellm_returned_model_name")
+                if isinstance(_returned_override, str) and _returned_override.strip():
+                    _new_model = _returned_override.strip()
+                    if (
+                        isinstance(chunk, dict)
+                        and chunk.get("type") == "message_start"
+                        and isinstance(chunk.get("message"), dict)
+                        and "model" in chunk["message"]
+                    ):
+                        chunk["message"]["model"] = _new_model
+                    elif isinstance(chunk, (bytes, bytearray)):
+                        chunk = ProxyBaseLLMRequestProcessing._rewrite_message_start_model_in_sse_bytes(
+                            bytes(chunk), _new_model
+                        )
                 yield serialize_chunk(chunk)
         except Exception as e:
             verbose_proxy_logger.exception(
