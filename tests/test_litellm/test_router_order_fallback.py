@@ -329,3 +329,47 @@ async def test_router_order_fallback_with_non_standard_fallbacks():
         fallbacks=["fallback-model"],  # non-standard format, passed per-request
     )
     assert response._hidden_params["model_id"] == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_router_order_fallback_with_model_group_alias():
+    """model_group_alias entries should also advance across order levels.
+
+    Regression for: when caller uses the alias name, the order-fallback builder
+    in async_function_with_fallbacks_common_utils used the unresolved alias as
+    the deployment lookup key, returning [] and suppressing all order fallback
+    entries. The alias must be resolved to its target group so the order set
+    matches the initial-routing deployment pool.
+    """
+    router = Router(
+        model_list=[
+            {
+                "model_name": "target-model",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_key": "bad",
+                    "mock_response": Exception("fail order 1"),
+                    "order": 1,
+                },
+                "model_info": {"id": "1"},
+            },
+            {
+                "model_name": "target-model",
+                "litellm_params": {
+                    "model": "gpt-4o",
+                    "api_key": "good",
+                    "mock_response": "success from alias-resolved order 2",
+                    "order": 2,
+                },
+                "model_info": {"id": "2"},
+            },
+        ],
+        model_group_alias={"alias-model": "target-model"},
+        num_retries=0,
+    )
+
+    response = await router.acompletion(
+        model="alias-model",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert response._hidden_params["model_id"] == "2"

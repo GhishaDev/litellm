@@ -5365,8 +5365,18 @@ class Router:
         _request_team_id: Optional[str] = (kwargs.get("metadata", {}) or {}).get(
             "user_api_key_team_id"
         )
+        # When `original_model_group` is a model_group_alias key, _get_all_deployments
+        # would miss the alias-target deployments (the alias name is not in
+        # model_name_to_deployment_indices) and order_set would be empty, suppressing
+        # order-based fallback. Resolve the alias here so order-fallback sees the same
+        # deployment pool as the initial routing call. `original_model_group` itself is
+        # left untouched so spend logs, prometheus labels, and fallback-loop dedup
+        # downstream continue to see the user-input alias name.
+        _target_for_order_lookup = (
+            self._get_model_from_alias(original_model_group) or original_model_group
+        )
         all_deployments = self._get_all_deployments(
-            model_name=original_model_group, team_id=_request_team_id
+            model_name=_target_for_order_lookup, team_id=_request_team_id
         )
         _order_set: set = {
             litellm.utils._get_deployment_order(d)
