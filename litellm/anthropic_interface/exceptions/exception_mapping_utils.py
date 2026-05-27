@@ -112,18 +112,17 @@ class AnthropicExceptionMapping:
         Extract error message from various provider response formats.
 
         Handles:
-        - Bedrock: {"detail": {"message": "..."}}
-        - AWS: {"Message": "..."}
-        - Generic: {"message": "..."}
+        - Bedrock:           {"detail": {"message": "..."}}
+        - AWS:               {"Message": "..."}
+        - OpenAI / new-api:  {"error": {"message": "...", ...}}
+        - Generic:           {"message": "..."}
         - Plain strings
         """
         parsed = safe_json_loads(raw_message)
         if isinstance(parsed, dict):
-            # Bedrock format
-            if "detail" in parsed and isinstance(parsed["detail"], dict):
-                return parsed["detail"].get("message", raw_message)
-            # AWS/generic format
-            return parsed.get("Message") or parsed.get("message") or raw_message
+            return AnthropicExceptionMapping._extract_message_from_dict(
+                parsed, raw_message
+            )
         return raw_message
 
     @staticmethod
@@ -150,13 +149,24 @@ class AnthropicExceptionMapping:
         Extract error message from a parsed provider-specific dict.
 
         Handles:
-        - Bedrock: {"detail": {"message": "..."}}
-        - AWS: {"Message": "..."}
-        - Generic: {"message": "..."}
+        - Bedrock:           {"detail": {"message": "..."}}
+        - AWS:               {"Message": "..."}
+        - OpenAI / new-api:  {"error": {"message": "...", ...}}
+        - Generic:           {"message": "..."}
+
+        Falls back to ``raw_message`` only when no recognized message field
+        is present, so an upstream JSON body's clean message is preferred
+        over a raw string that may carry post-decode debug suffixes.
         """
         # Bedrock format
         if "detail" in parsed and isinstance(parsed["detail"], dict):
             return parsed["detail"].get("message", raw_message)
+        # OpenAI / new-api / OpenAI-compatible nested error
+        err = parsed.get("error")
+        if isinstance(err, dict):
+            nested = err.get("message")
+            if isinstance(nested, str) and nested:
+                return nested
         # AWS/generic format
         return parsed.get("Message") or parsed.get("message") or raw_message
 

@@ -248,6 +248,31 @@ class TestTransformToAnthropicError:
         assert result["error"]["type"] == "rate_limit_error"
         assert result["error"]["message"] == "No deployments available"
 
+    def test_extracts_nested_openai_compat_error_message(self):
+        """
+        Upstream errors shaped `{"error":{"code","message","type"}}` (OpenAI,
+        new-api, OpenAI-compat gateways) need their nested `error.message`
+        extracted — falling back to the raw stringified JSON drags a
+        provider-specific envelope into the Anthropic envelope.
+        """
+        upstream = json.dumps(
+            {
+                "error": {
+                    "code": "model_not_found",
+                    "message": "model 'foo' not available",
+                    "type": "new_api_error",
+                }
+            }
+        )
+        result = AnthropicExceptionMapping.transform_to_anthropic_error(
+            status_code=503,
+            raw_message=upstream,
+        )
+        assert result["type"] == "error"
+        # 503 → api_error per status map; nested message lifted out cleanly.
+        assert result["error"]["type"] == "api_error"
+        assert result["error"]["message"] == "model 'foo' not available"
+
     def test_passthrough_recovers_anthropic_json_with_trailing_garbage(self):
         """
         When the Router appends debug suffixes after the upstream Anthropic
