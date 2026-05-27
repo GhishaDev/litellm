@@ -4,6 +4,7 @@ Utilities for mapping exceptions to Anthropic error format.
 Similar to litellm/litellm_core_utils/exception_mapping_utils.py but for Anthropic response format.
 """
 
+import json
 import re
 from typing import Dict, Optional
 
@@ -187,10 +188,23 @@ class AnthropicExceptionMapping:
             raw_message
         )
 
-        # Try to parse as JSON once
+        # Try to parse as JSON once.
         parsed: Optional[dict] = safe_json_loads(raw_message)
         if not isinstance(parsed, dict):
             parsed = None
+
+        # Fallback for messages where an Anthropic-shaped JSON body is
+        # followed by appended debug text (e.g. the Router's
+        # ". Received Model Group=...\nAvailable Model Group Fallbacks=..."
+        # suffix). `safe_json_loads` rejects trailing garbage; `raw_decode`
+        # parses the leading JSON value and ignores anything after it.
+        if parsed is None:
+            try:
+                obj, _ = json.JSONDecoder().raw_decode(raw_message.lstrip())
+                if isinstance(obj, dict):
+                    parsed = obj
+            except json.JSONDecodeError:
+                pass
 
         # If parsed and already in Anthropic format - passthrough
         if parsed is not None and AnthropicExceptionMapping._is_anthropic_error_dict(

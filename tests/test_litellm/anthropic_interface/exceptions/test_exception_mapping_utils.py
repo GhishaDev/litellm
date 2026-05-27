@@ -248,6 +248,29 @@ class TestTransformToAnthropicError:
         assert result["error"]["type"] == "rate_limit_error"
         assert result["error"]["message"] == "No deployments available"
 
+    def test_passthrough_recovers_anthropic_json_with_trailing_garbage(self):
+        """
+        When the Router appends debug suffixes after the upstream Anthropic
+        JSON body (`{"type":"error",...}. Received Model Group=...`), we
+        should still detect and passthrough the leading Anthropic envelope
+        instead of falling back to wrap-with-status-derived-type.
+        """
+        anthropic_body = (
+            '{"type":"error","error":{"type":"invalid_request_error",'
+            '"message":"field messages is required"}}'
+        )
+        raw = anthropic_body + (
+            ". Received Model Group=claude-sonnet-cache"
+            "\nAvailable Model Group Fallbacks=None"
+        )
+        result = AnthropicExceptionMapping.transform_to_anthropic_error(
+            status_code=500,  # wrong status (LiteLLM lost upstream 400)
+            raw_message=raw,
+        )
+        # Upstream type preserved even though status_code says 500.
+        assert result["error"]["type"] == "invalid_request_error"
+        assert result["error"]["message"] == "field messages is required"
+
 
 class TestStripLitellmWrapperPrefixes:
     """Tests for AnthropicExceptionMapping._strip_litellm_wrapper_prefixes()"""

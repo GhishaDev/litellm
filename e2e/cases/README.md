@@ -30,6 +30,7 @@ Humans can execute them too — every step is a concrete shell command.
 | 18 | `18_public_req_middleware.md` | Anthropic | `litellm_extras.PublicReqMiddleware` keeps streaming responses incremental, strips `x-litellm-*` under `X-Public-Req: 1`, and rejects sensitive `/v1/models` query params | — |
 | 19 | `19_anthropic_thinking_signature_retry_gate.md` | Anthropic | `/v1/messages` invalid-thinking-signature 400 propagates by default; `x-litellm-strip-thinking-on-signature-error: 1` opts into strip+retry with `x-litellm-thinking-stripped: true` response header and `litellm_anthropic_thinking_signature_retry_total` counter increment. SKIPs against upstreams that don't propagate Anthropic's verbatim error | — |
 | 20 | `20_returned_model_name.md` | Anthropic + OpenAI | `litellm_params.returned_model_name` (per-deployment) replaces `model` in every response — non-streaming + streaming × `/v1/messages` + `/v1/chat/completions`, including nested `message_start.message.model` for Anthropic SSE | — |
+| 21 | `21_anthropic_error_shape.md` | (none — malformed body) | `/v1/messages` 4xx responses use Anthropic envelope (`{type:"error",error:{type,message}}`), no `{"detail":...}` wrapper, no OpenAI-only `param`/`code`; streaming-pre-SSE error path same shape; `/v1/chat/completions` stays OpenAI-shaped (scope guard) | — |
 
 ## How to invoke
 
