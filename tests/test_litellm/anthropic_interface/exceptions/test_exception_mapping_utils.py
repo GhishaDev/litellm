@@ -206,3 +206,105 @@ class TestTransformToAnthropicError:
         )
         assert result["type"] == "error"
         assert result["error"]["message"] == '["error1", "error2"]'
+
+    def test_passthrough_through_litellm_provider_prefixes(self):
+        """
+        Upstream Anthropic JSON wrapped in `litellm.X: ProviderException - {...}`
+        (the real shape of `exception.message`) should be unwrapped and passed
+        through with the upstream error.type preserved.
+        """
+        anthropic_error = {
+            "type": "error",
+            "error": {
+                "type": "rate_limit_error",
+                "message": "Number of request tokens has exceeded your rate limit",
+            },
+        }
+        raw = "litellm.RateLimitError: AnthropicException - " + json.dumps(
+            anthropic_error
+        )
+        result = AnthropicExceptionMapping.transform_to_anthropic_error(
+            status_code=429,
+            raw_message=raw,
+        )
+        assert result["type"] == "error"
+        # Upstream enum preserved, not derived from status code.
+        assert result["error"]["type"] == "rate_limit_error"
+        assert (
+            result["error"]["message"]
+            == "Number of request tokens has exceeded your rate limit"
+        )
+
+    def test_wrap_strips_class_prefix_from_router_error(self):
+        """
+        A plain Router-side error string (no embedded JSON) still gets the
+        `litellm.X:` class prefix stripped before being wrapped.
+        """
+        result = AnthropicExceptionMapping.transform_to_anthropic_error(
+            status_code=429,
+            raw_message="litellm.RateLimitError: No deployments available",
+        )
+        assert result["type"] == "error"
+        assert result["error"]["type"] == "rate_limit_error"
+        assert result["error"]["message"] == "No deployments available"
+
+
+class TestStripLitellmWrapperPrefixes:
+    """Tests for AnthropicExceptionMapping._strip_litellm_wrapper_prefixes()"""
+
+    def test_plain_text_unchanged(self):
+        assert (
+            AnthropicExceptionMapping._strip_litellm_wrapper_prefixes("just a message")
+            == "just a message"
+        )
+
+    def test_empty_string(self):
+        assert AnthropicExceptionMapping._strip_litellm_wrapper_prefixes("") == ""
+
+    def test_single_litellm_prefix(self):
+        assert (
+            AnthropicExceptionMapping._strip_litellm_wrapper_prefixes(
+                "litellm.RateLimitError: slow down"
+            )
+            == "slow down"
+        )
+
+    def test_stacked_litellm_prefixes(self):
+        assert (
+            AnthropicExceptionMapping._strip_litellm_wrapper_prefixes(
+                "litellm.ContextWindowExceededError: litellm.BadRequestError: too long"
+            )
+            == "too long"
+        )
+
+    def test_provider_exception_prefix(self):
+        assert (
+            AnthropicExceptionMapping._strip_litellm_wrapper_prefixes(
+                'AnthropicException - {"type":"error"}'
+            )
+            == '{"type":"error"}'
+        )
+
+    def test_combined_litellm_and_provider_prefix(self):
+        assert (
+            AnthropicExceptionMapping._strip_litellm_wrapper_prefixes(
+                'litellm.RateLimitError: AnthropicException - {"type":"error"}'
+            )
+            == '{"type":"error"}'
+        )
+
+    def test_exception_suffix_variant(self):
+        """`litellm.XxxException:` (not Error) is also stripped."""
+        assert (
+            AnthropicExceptionMapping._strip_litellm_wrapper_prefixes(
+                "litellm.APIException: boom"
+            )
+            == "boom"
+        )
+
+    def test_idempotent(self):
+        once = AnthropicExceptionMapping._strip_litellm_wrapper_prefixes(
+            "litellm.RateLimitError: AnthropicException - inner"
+        )
+        twice = AnthropicExceptionMapping._strip_litellm_wrapper_prefixes(once)
+        assert once == twice == "inner"
