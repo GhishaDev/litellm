@@ -4,10 +4,22 @@ Utilities for mapping exceptions to Anthropic error format.
 Similar to litellm/litellm_core_utils/exception_mapping_utils.py but for Anthropic response format.
 """
 
-from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
+import re
 from typing import Dict, Optional
 
+from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
+
 from .exceptions import AnthropicErrorResponse, AnthropicErrorType
+
+
+# Leading `litellm.SomethingError: ` / `litellm.SomethingException: ` prefix that
+# LiteLLM exception classes prepend to their `.message` (often stacked, e.g.
+# `litellm.ContextWindowExceededError: litellm.BadRequestError: ...`).
+_LITELLM_CLASS_PREFIX = re.compile(r"^\s*litellm\.\w+(?:Error|Exception):\s*")
+
+# Provider exception prefix, e.g. `AnthropicException - {json}` /
+# `VertexAIException - ...`. Appears once, right before the raw upstream body.
+_PROVIDER_EXCEPTION_PREFIX = re.compile(r"^\s*\w+Exception\s*-\s*")
 
 # HTTP status code -> Anthropic error type
 # Source: https://docs.anthropic.com/en/api/errors
@@ -34,6 +46,32 @@ class AnthropicExceptionMapping:
     def get_error_type(status_code: int) -> AnthropicErrorType:
         """Map HTTP status code to Anthropic error type."""
         return ANTHROPIC_ERROR_TYPE_MAP.get(status_code, "api_error")
+
+    @staticmethod
+    def _strip_litellm_wrapper_prefixes(raw_message: str) -> str:
+        """
+        Strip LiteLLM/provider wrapper prefixes off an exception message so the
+        embedded upstream body (often a JSON string) is exposed.
+
+        LiteLLM exception classes prepend `litellm.<Class>: ` to `.message`,
+        sometimes stacked, and providers prepend `<Provider>Exception - `.
+        For example:
+
+            "litellm.RateLimitError: AnthropicException - {\"type\":\"error\",...}"
+                -> "{\"type\":\"error\",...}"
+
+        Idempotent: returns the input unchanged when no prefix is present.
+        """
+        message = raw_message
+        # Strip stacked `litellm.XxxError: ` prefixes until none remain.
+        while True:
+            stripped = _LITELLM_CLASS_PREFIX.sub("", message, count=1)
+            if stripped == message:
+                break
+            message = stripped
+        # Strip a single `<Provider>Exception - ` prefix.
+        message = _PROVIDER_EXCEPTION_PREFIX.sub("", message, count=1)
+        return message
 
     @staticmethod
     def create_error_response(
@@ -142,6 +180,12 @@ class AnthropicExceptionMapping:
         Returns:
             AnthropicErrorResponse dict
         """
+        # Strip LiteLLM/provider wrapper prefixes so an embedded upstream
+        # Anthropic error body can be detected and passed through unchanged.
+        raw_message = AnthropicExceptionMapping._strip_litellm_wrapper_prefixes(
+            raw_message
+        )
+
         # Try to parse as JSON once
         parsed: Optional[dict] = safe_json_loads(raw_message)
         if not isinstance(parsed, dict):
