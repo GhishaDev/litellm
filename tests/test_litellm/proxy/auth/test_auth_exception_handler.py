@@ -144,6 +144,181 @@ async def test_handle_authentication_error_budget_exceeded():
 
 
 @pytest.mark.asyncio
+async def test_known_auth_failure_logs_at_warning_without_traceback(caplog):
+    """
+    Regression for log-level mismatch: routine auth failures (no key,
+    expired key, invalid key, role mismatch) used to be logged at ERROR
+    with a full traceback via verbose_proxy_logger.exception. That fired
+    on every 401 from a probe/scanner and buried real errors. They must
+    now log at WARNING without exc_info, while truly unexpected exceptions
+    keep ERROR + traceback.
+    """
+    import logging
+
+    handler = UserAPIKeyAuthExceptionHandler()
+
+    mock_request = MagicMock()
+    mock_request.headers = {"x-litellm-call-id": "call-abc-123"}
+    mock_request_data: dict = {}
+    test_route = "/v1/chat/completions"
+    mock_span = None
+    mock_api_key = "test-key"
+
+    with (
+        patch(
+            "litellm.proxy.proxy_server.general_settings",
+            {"allow_requests_on_db_unavailable": False},
+        ),
+        patch(
+            "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+            new_callable=AsyncMock,
+        ),
+    ):
+        caplog.set_level(logging.WARNING, logger=verbose_proxy_logger.name)
+        # ProxyException is a known auth failure type — should log at WARN.
+        proxy_exc = ProxyException(
+            message="Authentication Error - Expired Key",
+            type=ProxyErrorTypes.auth_error,
+            param=None,
+            code=401,
+        )
+        try:
+            await handler._handle_authentication_error(
+                proxy_exc,
+                mock_request,
+                mock_request_data,
+                test_route,
+                mock_span,
+                mock_api_key,
+            )
+        except Exception:
+            pass
+
+    auth_records = [
+        r for r in caplog.records if "user_api_key_auth failed" in r.getMessage()
+    ]
+    assert len(auth_records) == 1, "expected exactly one auth-failure log record"
+    record = auth_records[0]
+    # WARN level for the known auth error class.
+    assert record.levelno == logging.WARNING
+    # No traceback attached — exc_info=False sets the record attribute to
+    # False, not None. Treat both as "no traceback".
+    assert not record.exc_info
+    # Structured extras carry the useful signal for log search / alerting.
+    assert getattr(record, "request_id", None) == "call-abc-123"
+    assert getattr(record, "route", None) == test_route
+    assert getattr(record, "exception_type", None) == "ProxyException"
+    # ProxyException.code is stored as string; whichever attribute the
+    # exception exposed, the structured field carries it through. Compare
+    # via str() so the test is robust to int/str representation.
+    assert str(getattr(record, "http_status", None)) == "401"
+
+
+@pytest.mark.asyncio
+async def test_unknown_exception_logs_at_error_with_traceback(caplog):
+    """
+    Counterpart to the previous test: unexpected exceptions (not a known
+    auth failure type) must still log at ERROR with a full traceback so
+    operators see real bugs.
+    """
+    import logging
+
+    handler = UserAPIKeyAuthExceptionHandler()
+
+    mock_request = MagicMock()
+    mock_request.headers = {}
+    mock_request_data: dict = {}
+    test_route = "/v1/chat/completions"
+
+    with (
+        patch(
+            "litellm.proxy.proxy_server.general_settings",
+            {"allow_requests_on_db_unavailable": False},
+        ),
+        patch(
+            "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+            new_callable=AsyncMock,
+        ),
+    ):
+        caplog.set_level(logging.WARNING, logger=verbose_proxy_logger.name)
+        # ValueError is NOT in _KNOWN_AUTH_ERROR_TYPES — must surface as ERROR.
+        try:
+            await handler._handle_authentication_error(
+                ValueError("totally unexpected"),
+                mock_request,
+                mock_request_data,
+                test_route,
+                None,
+                "test-key",
+            )
+        except Exception:
+            pass
+
+    auth_records = [
+        r for r in caplog.records if "user_api_key_auth failed" in r.getMessage()
+    ]
+    assert len(auth_records) == 1
+    record = auth_records[0]
+    assert record.levelno == logging.ERROR
+    # Traceback attached — exc_info=True populates this tuple at log time.
+    assert record.exc_info is not None
+    assert getattr(record, "exception_type", None) == "ValueError"
+
+
+@pytest.mark.asyncio
+async def test_empty_exception_message_falls_back_to_type_name(caplog):
+    """
+    ProxyException sometimes carries an empty `message` field; without the
+    fallback the log line collapses to just the type name with no signal.
+    Verify the format string substitutes the type name when str(e) is empty.
+    """
+    import logging
+
+    handler = UserAPIKeyAuthExceptionHandler()
+
+    mock_request = MagicMock()
+    mock_request.headers = {}
+    mock_request_data: dict = {}
+
+    with (
+        patch(
+            "litellm.proxy.proxy_server.general_settings",
+            {"allow_requests_on_db_unavailable": False},
+        ),
+        patch(
+            "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+            new_callable=AsyncMock,
+        ),
+    ):
+        caplog.set_level(logging.WARNING, logger=verbose_proxy_logger.name)
+        empty_exc = ProxyException(
+            message="",
+            type=ProxyErrorTypes.auth_error,
+            param=None,
+            code=401,
+        )
+        try:
+            await handler._handle_authentication_error(
+                empty_exc,
+                mock_request,
+                mock_request_data,
+                "/v1/chat/completions",
+                None,
+                "test-key",
+            )
+        except Exception:
+            pass
+
+    auth_records = [
+        r for r in caplog.records if "user_api_key_auth failed" in r.getMessage()
+    ]
+    assert len(auth_records) == 1
+    # Message body should contain the exception type name (the fallback),
+    # not be empty after the "user_api_key_auth failed:" prefix.
+    assert "ProxyException" in auth_records[0].getMessage()
+
+
+@pytest.mark.asyncio
 async def test_route_passed_to_post_call_failure_hook():
     """
     This route is used by proxy track_cost_callback's async_post_call_failure_hook to check if the route is an LLM route

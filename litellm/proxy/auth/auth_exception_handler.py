@@ -2,6 +2,7 @@
 Handles Authentication Errors
 """
 
+import logging
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 from fastapi import HTTPException, Request, status
@@ -23,6 +24,13 @@ from litellm.types.services import ServiceTypes
 # enforcement can key off this value; it must never collide with a real
 # user_id.
 DB_UNAVAILABLE_FALLBACK_USER_ID = "__db_unavailable_fallback__"
+
+# Known auth-failure exception types. These reflect a normal 401/403 outcome
+# (no key, expired key, invalid key, route not allowed, budget exceeded) and
+# should NOT be logged at ERROR with a full traceback — they happen routinely
+# from probes, expired sessions, and fat-fingered keys, and flooding the
+# error monitoring stream with them buries genuine issues.
+_KNOWN_AUTH_ERROR_TYPES = (ProxyException, HTTPException)
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
@@ -92,12 +100,36 @@ class UserAPIKeyAuthExceptionHandler:
                 request=request,
                 use_x_forwarded_for=general_settings.get("use_x_forwarded_for", False),
             )
-            verbose_proxy_logger.exception(
-                "litellm.proxy.proxy_server.user_api_key_auth(): Exception occured - {}\nRequester IP Address:{}".format(
-                    str(e),
-                    requester_ip,
-                ),
-                extra={"requester_ip": requester_ip},
+
+            # Known auth failures (no/expired/invalid key, role mismatch,
+            # budget exceeded) are normal 401/403 outcomes — log them at
+            # WARN without a traceback so the error stream stays signal.
+            # Truly unexpected exceptions still go to ERROR with a stack.
+            _is_known = isinstance(e, _KNOWN_AUTH_ERROR_TYPES)
+            _log_level = logging.WARNING if _is_known else logging.ERROR
+
+            # `str(e)` is sometimes empty for ProxyException, which historically
+            # left the log line as just the exception type name with no signal
+            # for why the request was rejected. Fall back to the type name so
+            # there is always SOMETHING to grep on.
+            _message_part = str(e) or type(e).__name__
+
+            verbose_proxy_logger.log(
+                _log_level,
+                "user_api_key_auth failed: %s",
+                _message_part,
+                extra={
+                    "requester_ip": requester_ip,
+                    "request_id": request.headers.get("x-litellm-call-id"),
+                    "route": route,
+                    "exception_type": type(e).__name__,
+                    "http_status": (
+                        getattr(e, "code", None) or getattr(e, "status_code", None)
+                    ),
+                },
+                # Only attach a traceback for unexpected exceptions. Known
+                # auth errors are self-explanatory from the type + message.
+                exc_info=not _is_known,
             )
 
             # Log this exception to OTEL, Datadog etc
