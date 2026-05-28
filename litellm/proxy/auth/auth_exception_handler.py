@@ -61,6 +61,8 @@ _PERMISSION_DENIED_DETAIL_MARKERS = (
     "not authorized",
     "admin only",
     "admin-only",
+    "proxy admin",  # "Only proxy admin can be used to generate ..."
+    "your role",  # "Your role=unknown" / "Your role is not allowed ..."
     "master key",
     "requires",  # "requires admin role", "requires master key", etc.
     "permission",
