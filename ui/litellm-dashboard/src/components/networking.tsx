@@ -69,7 +69,7 @@ export const getInProductNudgesCall = async (accessToken: string) => {
  * Helper file for calls being made to proxy
  */
 import MessageManager from "@/components/molecules/message_manager";
-import { clearTokenCookies, storeLoginToken } from "@/utils/cookieUtils";
+import { clearTokenCookies, getCookie, storeLoginToken } from "@/utils/cookieUtils";
 import { TagNewRequest, TagUpdateRequest, TagListResponse, TagInfoResponse } from "./tag_management/types";
 import { Team } from "./key_team_helpers/key_list";
 import { UserInfo } from "./view_users/types";
@@ -341,20 +341,99 @@ export interface CredentialsResponse {
 
 let lastErrorTime = 0;
 
+// Substrings the backend uses across the various ways an auth credential
+// becomes invalid (expired, revoked, no token, malformed). Matching ANY of
+// these means "your session is gone — go log in again". String matching is
+// fragile by nature (backend wording can drift), so we treat these as a
+// best-effort fallback. The primary signal — when the caller can supply it
+// — is HTTP status + the cookie presence check, see `handleErrorResponse`.
+const SESSION_EXPIRED_SIGNALS = [
+  "Authentication Error - Expired Key",
+  "Authentication Error - Invalid",
+  "Authentication Error: Invalid",
+  "token has been revoked",
+  "No auth header",
+  "Session expired",
+  "UI Session Expired",
+];
+
+const isSessionExpiredFromMessage = (errorString: string): boolean =>
+  SESSION_EXPIRED_SIGNALS.some((marker) => errorString.includes(marker));
+
+/**
+ * Redirect to the login page and clear any auth state. Used by both the
+ * status-based and the message-based detection paths so the actual
+ * "log the user out" mechanics live in one place.
+ */
+const triggerSessionExpiredRedirect = () => {
+  NotificationsManager.info("UI Session Expired. Logging out.");
+  clearTokenCookies();
+  const browserLocation = getWindowLocation();
+  if (browserLocation) {
+    window.location.href = browserLocation.pathname;
+  }
+};
+
+/**
+ * Status-aware error handler — preferred over `handleError` whenever the
+ * caller has the original `Response` object. Distinguishes "your session is
+ * gone, go log in" (401 with no cookie OR a session-expired marker in the
+ * body) from "this endpoint requires more privilege" (403, or 401 while
+ * the cookie is still present and the body shape says permission-only).
+ *
+ * - 401 + session-expired signal -> clear cookies + redirect to login
+ * - 403 -> toast only, never redirect (you're logged in, just not allowed)
+ * - other errors -> delegate to `handleError` (same rate-limited path)
+ */
+export const handleErrorResponse = async (
+  response: Pick<Response, "status"> | { status: number },
+  errorData: string | any,
+): Promise<void> => {
+  const status = response?.status;
+  const errorString = typeof errorData === "string" ? errorData : JSON.stringify(errorData ?? "");
+
+  if (status === 401) {
+    // The most reliable "session is gone" signal: the cookie is no longer
+    // present at all. If a session ever existed it has been cleared
+    // already, so push the user back to login.
+    const hasAuthCookie =
+      typeof window !== "undefined" && Boolean(getCookie("token") || getCookie("session_token"));
+    if (!hasAuthCookie || isSessionExpiredFromMessage(errorString)) {
+      triggerSessionExpiredRedirect();
+      return;
+    }
+    // 401 but the cookie is still present — likely "your role can't call
+    // THIS specific endpoint" expressed as 401 (LiteLLM uses 401 for both
+    // session-gone and role-mismatch, sigh). Show a toast, don't bounce
+    // the user out of a perfectly fine session.
+    NotificationsManager.fromBackend(errorData);
+    return;
+  }
+
+  if (status === 403) {
+    // Forbidden = "I know who you are, but you can't do this". Never log
+    // the user out for a 403; just surface what the backend said.
+    NotificationsManager.fromBackend(errorData);
+    return;
+  }
+
+  // Non-auth errors fall through to the existing rate-limited handler.
+  await handleError(errorData);
+};
+
 export const handleError = async (errorData: string | any) => {
   const currentTime = Date.now();
   if (currentTime - lastErrorTime > 60000) {
     // 60000 milliseconds = 60 seconds
     // Convert errorData to string if it isn't already
     const errorString = typeof errorData === "string" ? errorData : JSON.stringify(errorData);
-    if (errorString.includes("Authentication Error - Expired Key")) {
-      NotificationsManager.info("UI Session Expired. Logging out.");
+    // Match any known session-expired marker, not just the historical
+    // "Expired Key" wording — the backend emits several variants and the
+    // single-string match used to miss most of them.
+    if (isSessionExpiredFromMessage(errorString)) {
       lastErrorTime = currentTime;
-      clearTokenCookies();
-      const browserLocation = getWindowLocation();
-      if (browserLocation) {
-        window.location.href = browserLocation.pathname;
-      }
+      triggerSessionExpiredRedirect();
+      return;
     }
     lastErrorTime = currentTime;
   } else {
