@@ -39,12 +39,17 @@ _SESSION_EXPIRED_DETAIL_MARKERS = (
 _INVALID_CREDENTIALS_DETAIL_MARKERS = (
     "no auth header",
     "no authentication",
+    "no api key passed",  # bare `Exception("No api key passed in.")` from user_api_key_auth.py
+    "no api key",  # broader form
     "invalid api key",
     "invalid token",
     "invalid bearer",
     "token not found",
     "key not found",
     "malformed",
+    "malformed api key",  # bare `Exception("Malformed API Key passed in. ...")`
+    "virtual key expected",  # bare `Exception("LiteLLM Virtual Key expected. ...")`
+    "expected to start with 'sk-'",  # tail of the same exception
 )
 
 # Substrings indicating the caller IS authenticated but lacks the
@@ -65,43 +70,56 @@ _PERMISSION_DENIED_DETAIL_MARKERS = (
 
 
 def _classify_auth_failure(e: Exception) -> "ProxyErrorTypes":
-    """Pick a specific ProxyErrorTypes for an HTTPException raised by the
-    auth pipeline, based on its status code and detail text.
+    """Pick a specific ProxyErrorTypes for an auth-pipeline exception
+    based on its status code (if any) and message text.
 
-    Rationale: the wrapper used to collapse every wrapped HTTPException
+    Rationale: the wrapper used to collapse every wrapped auth failure
     into the generic `auth_error` type, leaving UI clients no way to
     tell "your session is gone, redirect to login" apart from "you're
     logged in but not authorized for THIS endpoint" — both arrived as
     401 with `type=auth_error`. This function makes that decision once,
     centrally, so the wire-format `type` field carries the action.
 
+    Works for BOTH:
+    - HTTPException — uses status_code + detail text
+    - bare Exception — uses str(e). The auth pipeline raises plenty of
+      these as final messages, e.g.
+        Exception("No api key passed in.")
+        Exception("LiteLLM Virtual Key expected. Received=... start with 'sk-'")
+        Exception("Malformed API Key passed in. Ensure Key has `Bearer` prefix.")
+      so the classifier MUST inspect them or the bare-Exception
+      catch-all in the wrapper keeps emitting plain `auth_error` and
+      defeats the whole point of D1.
+
     Returns the most specific type we can confidently determine. Falls
     back to `auth_error` only when truly ambiguous.
 
-    Logic:
+    Logic (in priority order):
     - HTTP 403 -> `auth_permission_denied` (semantics of 403)
-    - HTTP 401 + detail contains an expired/revoked marker -> `auth_session_expired`
-    - HTTP 401 + detail contains an invalid/missing-credential marker -> `auth_invalid_credentials`
-    - HTTP 401 + detail contains a permission/role marker -> `auth_permission_denied`
-      (LiteLLM uses 401 for role mismatch too, hence the dual check)
+    - text contains an expired/revoked marker -> `auth_session_expired`
+    - text contains an invalid/missing-credential marker -> `auth_invalid_credentials`
+    - text contains a permission/role marker -> `auth_permission_denied`
+      (LiteLLM uses 401 for role mismatch too)
     - Otherwise -> `auth_error` (UI falls back to its heuristic)
     """
     status_code = getattr(e, "status_code", None)
-    detail = str(getattr(e, "detail", "") or "").lower()
+    # Prefer HTTPException.detail; fall back to str(e) so the same
+    # function classifies bare Exceptions from the auth pipeline.
+    detail_attr = str(getattr(e, "detail", "") or "")
+    text = (detail_attr or str(e)).lower()
 
     if status_code == 403:
         return ProxyErrorTypes.auth_permission_denied
 
-    # For 401 (and any other code that flows through here), inspect the
-    # detail text. Order matters: check expired first because revoked
-    # keys often surface as "invalid" too, and we want to label them as
+    # Order matters: check expired first because revoked keys often
+    # surface as "invalid" too, and we want to label them as
     # session-expired (the recovery action — re-login — is the same and
     # more accurate semantically).
-    if any(marker in detail for marker in _SESSION_EXPIRED_DETAIL_MARKERS):
+    if any(marker in text for marker in _SESSION_EXPIRED_DETAIL_MARKERS):
         return ProxyErrorTypes.auth_session_expired
-    if any(marker in detail for marker in _INVALID_CREDENTIALS_DETAIL_MARKERS):
+    if any(marker in text for marker in _INVALID_CREDENTIALS_DETAIL_MARKERS):
         return ProxyErrorTypes.auth_invalid_credentials
-    if any(marker in detail for marker in _PERMISSION_DENIED_DETAIL_MARKERS):
+    if any(marker in text for marker in _PERMISSION_DENIED_DETAIL_MARKERS):
         return ProxyErrorTypes.auth_permission_denied
 
     return ProxyErrorTypes.auth_error
@@ -243,12 +261,14 @@ class UserAPIKeyAuthExceptionHandler:
                 # (e.g. token_not_found_in_db, expired_key, *_access_denied);
                 # passing it through preserves that signal end-to-end.
                 raise e
-            # Catch-all for bare Exception: we cannot reliably classify
-            # without status_code/detail, so emit the generic type. The UI
-            # will fall back to its heuristic for this path.
+            # Catch-all for bare Exception. Classify by message content
+            # so the wire-format type still carries an action signal —
+            # the auth pipeline raises plenty of these (e.g. missing/
+            # malformed/wrong-prefix key checks). _classify_auth_failure
+            # transparently inspects str(e) when there's no `detail`.
             raise ProxyException(
                 message="Authentication Error, " + str(e),
-                type=ProxyErrorTypes.auth_error,
+                type=_classify_auth_failure(e),
                 param=getattr(e, "param", "None"),
                 code=status.HTTP_401_UNAUTHORIZED,
             )
