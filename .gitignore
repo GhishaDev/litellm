@@ -107,3 +107,15 @@ STABILIZATION_TODO.md
 **/playwright-report
 **/*.storageState.json
 **/coverage
+
+# Next.js admin UI build output. Upstream BerriAI/litellm commits this
+# (their docker build doesn't rebuild the UI), but in this fork the
+# Dockerfile rebuilds from ui/litellm-dashboard/src/ on every image
+# build — so committing the artifacts adds 100+ file churn per UI PR
+# for zero deploy benefit. Local dev that runs the proxy outside docker
+# can `cd ui/litellm-dashboard && npm run build` to populate this for
+# direct serving.
+litellm/proxy/_experimental/out/
+ui/litellm-dashboard/out/
+ui/litellm-dashboard/.next/
+ui/litellm-dashboard/node_modules/
