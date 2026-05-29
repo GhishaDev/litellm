@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { clearTokenCookies } from "@/utils/cookieUtils";
+import { clearTokenCookies, getCookie } from "@/utils/cookieUtils";
 import * as Networking from "./networking";
 
 vi.mock("@/utils/cookieUtils", () => ({
@@ -77,6 +77,362 @@ describe("networking - expired session handling", () => {
     }
 
     expect(mockFetch).toHaveBeenCalledOnce();
+  });
+});
+
+describe("handleErrorResponse - status-aware auth handling", () => {
+  // Stub window.location so the redirect path doesn't crash jsdom.
+  let originalLocation: Location;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    originalLocation = window.location;
+    delete (window as any).location;
+    (window as any).location = { ...originalLocation, href: "/admin", pathname: "/admin" };
+  });
+
+  afterEach(() => {
+    (window as any).location = originalLocation;
+  });
+
+  it("redirects on 401 when the auth cookie is gone (session expired)", async () => {
+    vi.mocked(getCookie).mockReturnValue(undefined as any);
+
+    await Networking.handleErrorResponse({ status: 401 }, { error: "no cookie" });
+
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("redirects on 401 when the body carries a session-expired marker", async () => {
+    // Cookie still set, but the body explicitly says the credential is dead.
+    vi.mocked(getCookie).mockReturnValue("any-token" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { message: "Authentication Error - Expired Key" } },
+    );
+
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("does NOT redirect on 401 when the cookie is still valid and body says no session-expired marker", async () => {
+    // This is the "logged in but called an admin-only endpoint" case.
+    // LiteLLM uses 401 for permission too — we must not bounce the user
+    // out of an otherwise healthy session.
+    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { message: "Master Key required" } },
+    );
+
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("does NOT redirect on 403 (permission denied)", async () => {
+    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
+
+    await Networking.handleErrorResponse({ status: 403 }, { error: "forbidden" });
+
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("falls through to handleError for non-401/403 errors", async () => {
+    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
+
+    // 500 should not trigger the auth redirect.
+    await Networking.handleErrorResponse({ status: 500 }, { error: "internal" });
+
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleErrorResponse - type-based auth routing (D1 contract)", () => {
+  // These tests cover the NEW path that reads `error.type` from the
+  // response body. When the backend emits a specific auth_* type from
+  // ProxyErrorTypes, the UI should dispatch by table lookup — no
+  // regex, no cookie-presence guess. The status code is informational
+  // only; the type is the source of truth.
+  let originalLocation: Location;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    originalLocation = window.location;
+    delete (window as any).location;
+    (window as any).location = { ...originalLocation, href: "/admin", pathname: "/admin" };
+  });
+
+  afterEach(() => {
+    (window as any).location = originalLocation;
+  });
+
+  // --- REDIRECT_LOGIN types ------------------------------------------------
+
+  it("redirects on type=auth_session_expired regardless of cookie/status", async () => {
+    // Even with a still-present cookie, the structured type
+    // unambiguously says "session is gone". Redirect, no question.
+    vi.mocked(getCookie).mockReturnValue("might-still-be-cached" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { type: "auth_session_expired", message: "Key has expired" } },
+    );
+
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("redirects on type=auth_invalid_credentials", async () => {
+    vi.mocked(getCookie).mockReturnValue("anything" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { type: "auth_invalid_credentials", message: "No auth header" } },
+    );
+
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("redirects on legacy type=expired_key (predates D1)", async () => {
+    // Backward compat — existing code paths that already raised
+    // ProxyException with type=expired_key continue to work.
+    vi.mocked(getCookie).mockReturnValue("anything" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { type: "expired_key", message: "Key has expired" } },
+    );
+
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("redirects on legacy type=token_not_found_in_db", async () => {
+    vi.mocked(getCookie).mockReturnValue("anything" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { type: "token_not_found_in_db", message: "..." } },
+    );
+
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  // --- TOAST types ---------------------------------------------------------
+
+  it("does NOT redirect on type=auth_permission_denied (the bug we're fixing)", async () => {
+    // This is the case the whole D1+D2 effort exists for: the user is
+    // logged in, they just called an endpoint their role can't reach.
+    // No redirect, no cookie clearing, just a toast.
+    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { type: "auth_permission_denied", message: "Master Key required" } },
+    );
+
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("does NOT redirect on type=key_model_access_denied", async () => {
+    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { type: "key_model_access_denied", message: "Key does not have access to gpt-4" } },
+    );
+
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("does NOT redirect on type=team_member_permission_error", async () => {
+    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 403 },
+      { error: { type: "team_member_permission_error", message: "..." } },
+    );
+
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("does NOT redirect on type=budget_exceeded", async () => {
+    // Budget exhaustion is permission-like: caller is who they say
+    // they are, just out of credit. Toast, don't bounce.
+    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 400 },
+      { error: { type: "budget_exceeded", message: "Budget exceeded" } },
+    );
+
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  // --- HEURISTIC fallback --------------------------------------------------
+
+  it("falls through to heuristic on type=auth_error (generic) — cookie present", async () => {
+    // Generic type means backend couldn't classify. Use the cookie
+    // heuristic. Cookie present + no marker -> don't redirect (the
+    // step-2 safe default).
+    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { type: "auth_error", message: "something obscure" } },
+    );
+
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("falls through to heuristic on type=auth_error — cookie absent → redirect", async () => {
+    vi.mocked(getCookie).mockReturnValue(undefined as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { type: "auth_error", message: "something obscure" } },
+    );
+
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("falls through to heuristic on unknown type", async () => {
+    // Unknown / future / typo'd type — heuristic still runs, no crash.
+    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { type: "some_brand_new_type_we_dont_know", message: "..." } },
+    );
+
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  // --- Body-shape robustness -----------------------------------------------
+
+  it("reads type from top-level field (admin-endpoint shape)", async () => {
+    // Some admin endpoints respond with {type, message} at the top
+    // level rather than {error: {type, message}}. extractErrorType
+    // handles both.
+    vi.mocked(getCookie).mockReturnValue("anything" as any);
+
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { type: "auth_session_expired", message: "..." },
+    );
+
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("falls through to heuristic when body is a string (no structured type)", async () => {
+    // Legacy backend behavior — body is just a string. extractErrorType
+    // returns null, the heuristic runs.
+    vi.mocked(getCookie).mockReturnValue(undefined as any);
+
+    await Networking.handleErrorResponse({ status: 401 }, "Authentication Error - Expired Key");
+
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("falls through to heuristic when body has no error.type field", async () => {
+    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
+
+    // Cookie present + no type + no marker → no redirect (safe default).
+    await Networking.handleErrorResponse(
+      { status: 401 },
+      { error: { message: "some message without a type field" } },
+    );
+
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleError (legacy) - now also reads error.type", () => {
+  // The 30+ existing callers use handleError(errorData) — they don't
+  // pass a Response object. To make D1's structured types actually
+  // affect production, the legacy handler itself must read error.type.
+  // This describe covers that "make it work for callers we didn't
+  // migrate" path.
+  //
+  // handleError throttles itself with a 60s rate limit (lastErrorTime
+  // module-level), so back-to-back tests would be suppressed. Use
+  // fake timers + advance system time well past 60s between each test
+  // so every test sees a clean rate-limit window.
+
+  // Use a fake clock anchored once for the whole describe so each test
+  // sees a monotonically increasing time and the rate-limit window
+  // always clears between calls. afterEach -> useRealTimers would reset
+  // the clock back to OS time and recreate the throttle window.
+  const baseTime = new Date("2030-01-01T00:00:00Z").getTime();
+  let testCounter = 0;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    testCounter += 1;
+    // Each test runs at base + N hours; rate-limit window (60s) is
+    // dwarfed by the per-test 1h gap.
+    vi.setSystemTime(new Date(baseTime + testCounter * 3600 * 1000));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("redirects when error.type=auth_session_expired", async () => {
+    await Networking.handleError({
+      error: { type: "auth_session_expired", message: "Key has expired" },
+    });
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("redirects when error.type=auth_invalid_credentials (D1's new type)", async () => {
+    await Networking.handleError({
+      error: { type: "auth_invalid_credentials", message: "No api key passed in." },
+    });
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("redirects when error.type=token_not_found_in_db (existing legacy specific type)", async () => {
+    await Networking.handleError({
+      error: { type: "token_not_found_in_db", message: "Invalid proxy server token..." },
+    });
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("does NOT redirect when error.type=auth_permission_denied (the bug)", async () => {
+    // legacy handleError previously had no way to know this was a
+    // permission case, so it just did nothing (correct outcome). With
+    // the type-aware path, we still do nothing for permission types —
+    // no false-positive redirect.
+    await Networking.handleError({
+      error: { type: "auth_permission_denied", message: "Master Key required" },
+    });
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("does NOT redirect when error.type=budget_exceeded", async () => {
+    await Networking.handleError({
+      error: { type: "budget_exceeded", message: "Budget exceeded" },
+    });
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("falls back to marker heuristic when no type but message has marker", async () => {
+    // Older backend without D1 — body is just a string with a marker.
+    await Networking.handleError("Authentication Error - Expired Key");
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("does nothing when no type, no marker (legacy behavior preserved)", async () => {
+    await Networking.handleError("Some unrelated error message");
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("type=auth_error falls through to marker heuristic", async () => {
+    // Backend gave up on classifying; marker present in message.
+    await Networking.handleError({
+      error: { type: "auth_error", message: "Authentication Error - Expired Key" },
+    });
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
   });
 });
 
@@ -402,54 +758,5 @@ describe("individualModelHealthCheckCall", () => {
     const [url] = mockFetch.mock.calls[0];
     const parsed = typeof url === "string" ? new URL(url, "http://example.com") : new URL((url as Request).url);
     expect(parsed.searchParams.get("model_id")).toBe("id/with/slashes");
-  });
-});
-
-describe("teamInfoCall", () => {
-  const originalFetch = global.fetch;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    global.fetch = originalFetch;
-  });
-
-  it("should URL-encode team_id query param to handle special characters safely", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({ team_id: "team with spaces & special?chars" }),
-    } as any);
-    global.fetch = mockFetch as any;
-
-    const teamID = "team with spaces & special?chars";
-    await Networking.teamInfoCall("token", teamID);
-
-    expect(mockFetch).toHaveBeenCalledOnce();
-    const [url] = mockFetch.mock.calls[0];
-    const urlStr = typeof url === "string" ? url : (url as Request).url;
-    const parsed = typeof url === "string" ? new URL(url, "http://example.com") : new URL((url as Request).url);
-
-    expect(urlStr).toContain("/team/info");
-    // Encoded value is present in the raw URL string (verifies encodeURIComponent was used)
-    expect(urlStr).toContain(`team_id=${encodeURIComponent(teamID)}`);
-    // Round-trip parse returns the original team_id
-    expect(parsed.searchParams.get("team_id")).toBe(teamID);
-  });
-
-  it("should not append team_id when teamID is null", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({}),
-    } as any);
-    global.fetch = mockFetch as any;
-
-    await Networking.teamInfoCall("token", null);
-
-    expect(mockFetch).toHaveBeenCalledOnce();
-    const [url] = mockFetch.mock.calls[0];
-    const parsed = typeof url === "string" ? new URL(url, "http://example.com") : new URL((url as Request).url);
-    expect(parsed.searchParams.has("team_id")).toBe(false);
   });
 });

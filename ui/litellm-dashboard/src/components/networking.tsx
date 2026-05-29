@@ -69,7 +69,7 @@ export const getInProductNudgesCall = async (accessToken: string) => {
  * Helper file for calls being made to proxy
  */
 import MessageManager from "@/components/molecules/message_manager";
-import { clearTokenCookies, storeLoginToken } from "@/utils/cookieUtils";
+import { clearTokenCookies, getCookie, storeLoginToken } from "@/utils/cookieUtils";
 import { TagNewRequest, TagUpdateRequest, TagListResponse, TagInfoResponse } from "./tag_management/types";
 import { Team } from "./key_team_helpers/key_list";
 import { UserInfo } from "./view_users/types";
@@ -341,20 +341,201 @@ export interface CredentialsResponse {
 
 let lastErrorTime = 0;
 
+// PRIMARY signal — backend's structured `error.type` field. See
+// litellm.proxy._types.ProxyErrorTypes. The proxy classifies every wrapped
+// auth failure into one of these strings; the UI just dispatches the right
+// action by table lookup, no regex needed.
+//
+// Adding a new auth type? Mirror the docstring on the backend enum entry
+// here so the contract is visible from both sides.
+type AuthAction = "REDIRECT_LOGIN" | "TOAST" | "HEURISTIC";
+
+const AUTH_ERROR_TYPE_TO_ACTION: Record<string, AuthAction> = {
+  // Session is gone — local auth state is no good. Clear + redirect.
+  auth_session_expired: "REDIRECT_LOGIN",
+  auth_invalid_credentials: "REDIRECT_LOGIN",
+  expired_key: "REDIRECT_LOGIN", // legacy specific type, predates D1
+  token_not_found_in_db: "REDIRECT_LOGIN", // ditto
+
+  // Caller authenticated but lacks privilege for THIS endpoint. Toast
+  // only — bouncing them to login would be hostile UX.
+  auth_permission_denied: "TOAST",
+  key_model_access_denied: "TOAST",
+  team_model_access_denied: "TOAST",
+  user_model_access_denied: "TOAST",
+  org_model_access_denied: "TOAST",
+  project_model_access_denied: "TOAST",
+  key_vector_store_access_denied: "TOAST",
+  team_member_permission_error: "TOAST",
+
+  // Budget exhaustion is a permission-like state — the user IS who they
+  // say they are; their budget just ran out. Toast.
+  budget_exceeded: "TOAST",
+
+  // Generic auth_error means "backend couldn't classify" — fall back to
+  // the cookie + marker heuristic. Same for unknown types via the lookup
+  // miss path below.
+  auth_error: "HEURISTIC",
+};
+
+/**
+ * Extract the structured `type` field from a backend error body, if
+ * present. The proxy wraps responses two ways depending on the endpoint:
+ *   { error: { type: "...", message: "...", code: "401" } }   ← chat/completions
+ *   { type: "...", message: "..." }                            ← admin endpoints
+ *
+ * We accept either shape and return null when nothing recognizable is
+ * there (legacy backend before D1, or non-auth error path).
+ */
+const extractErrorType = (errorData: any): string | null => {
+  if (!errorData || typeof errorData === "string") return null;
+  const nested = errorData?.error?.type;
+  const flat = errorData?.type;
+  const value = typeof nested === "string" ? nested : typeof flat === "string" ? flat : null;
+  return value && value.length > 0 ? value : null;
+};
+
+// Substrings the backend uses across the various ways an auth credential
+// becomes invalid (expired, revoked, no token, malformed). Matching ANY of
+// these means "your session is gone — go log in again". String matching is
+// fragile by nature (backend wording can drift), so we treat these as a
+// best-effort fallback used ONLY when the structured `type` field is
+// missing or maps to "HEURISTIC" (i.e. generic `auth_error`).
+const SESSION_EXPIRED_SIGNALS = [
+  "Authentication Error - Expired Key",
+  "Authentication Error - Invalid",
+  "Authentication Error: Invalid",
+  "token has been revoked",
+  "No auth header",
+  "Session expired",
+  "UI Session Expired",
+];
+
+const isSessionExpiredFromMessage = (errorString: string): boolean =>
+  SESSION_EXPIRED_SIGNALS.some((marker) => errorString.includes(marker));
+
+/**
+ * Redirect to the login page and clear any auth state. Used by both the
+ * status-based and the message-based detection paths so the actual
+ * "log the user out" mechanics live in one place.
+ */
+const triggerSessionExpiredRedirect = () => {
+  NotificationsManager.info("UI Session Expired. Logging out.");
+  clearTokenCookies();
+  const browserLocation = getWindowLocation();
+  if (browserLocation) {
+    window.location.href = browserLocation.pathname;
+  }
+};
+
+/**
+ * Status-aware error handler. Three-tier decision:
+ *
+ *   1. PREFERRED: structured `error.type` from the response body. The
+ *      backend (since the D1 taxonomy patch) emits one of:
+ *        auth_session_expired / auth_invalid_credentials → REDIRECT_LOGIN
+ *        auth_permission_denied / *_access_denied / *_permission_error → TOAST
+ *        budget_exceeded → TOAST
+ *        auth_error → HEURISTIC (fall through to step 2)
+ *      Type lookup is exact, cannot be wrong, and survives any backend
+ *      message wording drift.
+ *
+ *   2. FALLBACK heuristic (when type is missing or HEURISTIC): use HTTP
+ *      status + cookie presence + message-marker scan. This is the path
+ *      used if the backend is on an older build that hasn't been
+ *      upgraded to include the structured types yet, so the upgrade is
+ *      safely incremental.
+ *
+ *   3. Non-auth errors (4xx that aren't 401/403, 5xx, etc) delegate to
+ *      the legacy `handleError` (same rate-limited path; no redirect).
+ *
+ * Caller responsibility: pass the original `Response` object (or at
+ * least a `{status: number}`) so step 1/2 can dispatch correctly.
+ */
+export const handleErrorResponse = async (
+  response: Pick<Response, "status"> | { status: number },
+  errorData: string | any,
+): Promise<void> => {
+  const status = response?.status;
+
+  // --- Step 1: try the structured type first --------------------------------
+  const errorType = extractErrorType(errorData);
+  if (errorType) {
+    const action = AUTH_ERROR_TYPE_TO_ACTION[errorType];
+    if (action === "REDIRECT_LOGIN") {
+      triggerSessionExpiredRedirect();
+      return;
+    }
+    if (action === "TOAST") {
+      NotificationsManager.fromBackend(errorData);
+      return;
+    }
+    // action === "HEURISTIC" or undefined (unknown type) → fall through
+    // to step 2. Don't return here — let status-based heuristic decide.
+  }
+
+  // --- Step 2: status-based heuristic (legacy / unknown type fallback) ------
+  const errorString = typeof errorData === "string" ? errorData : JSON.stringify(errorData ?? "");
+
+  if (status === 401) {
+    // No cookie = session is definitely gone (no race between server
+    // and client). If there IS a cookie, look for a message marker
+    // (less reliable, but covers older backends without the type field).
+    const hasAuthCookie = typeof window !== "undefined" && Boolean(getCookie("token"));
+    if (!hasAuthCookie || isSessionExpiredFromMessage(errorString)) {
+      triggerSessionExpiredRedirect();
+      return;
+    }
+    // 401 + cookie + no expiry marker → treat as permission-denied to
+    // avoid bouncing a still-valid session out for what is probably a
+    // role mismatch.
+    NotificationsManager.fromBackend(errorData);
+    return;
+  }
+
+  if (status === 403) {
+    // Forbidden — authenticated but not authorized. Never redirect.
+    NotificationsManager.fromBackend(errorData);
+    return;
+  }
+
+  // --- Step 3: non-auth errors → legacy rate-limited handler ---------------
+  await handleError(errorData);
+};
+
 export const handleError = async (errorData: string | any) => {
   const currentTime = Date.now();
   if (currentTime - lastErrorTime > 60000) {
-    // 60000 milliseconds = 60 seconds
-    // Convert errorData to string if it isn't already
-    const errorString = typeof errorData === "string" ? errorData : JSON.stringify(errorData);
-    if (errorString.includes("Authentication Error - Expired Key")) {
-      NotificationsManager.info("UI Session Expired. Logging out.");
-      lastErrorTime = currentTime;
-      clearTokenCookies();
-      const browserLocation = getWindowLocation();
-      if (browserLocation) {
-        window.location.href = browserLocation.pathname;
+    // 60000 milliseconds = 60 seconds.
+
+    // STEP 1: prefer the structured `error.type` from the backend (D1
+    // contract). This is the path that actually fires for the ~30
+    // legacy callers that didn't migrate to handleErrorResponse — by
+    // making the legacy entry point smart, every fetch site
+    // automatically benefits from the D1 backend taxonomy without
+    // touching their call sites.
+    const errorType = extractErrorType(errorData);
+    if (errorType) {
+      const action = AUTH_ERROR_TYPE_TO_ACTION[errorType];
+      if (action === "REDIRECT_LOGIN") {
+        lastErrorTime = currentTime;
+        triggerSessionExpiredRedirect();
+        return;
       }
+      // action === "TOAST" or "HEURISTIC" or unknown — fall through to
+      // the legacy marker path. We deliberately do NOT toast here:
+      // handleError is the rate-limited error funnel and not every
+      // caller wants its own toast; preserving the legacy behavior of
+      // "do nothing for non-session-gone" keeps backward compatibility.
+    }
+
+    // STEP 2: legacy marker-based fallback for older backend builds
+    // and `auth_error` (generic, no type signal) cases.
+    const errorString = typeof errorData === "string" ? errorData : JSON.stringify(errorData);
+    if (isSessionExpiredFromMessage(errorString)) {
+      lastErrorTime = currentTime;
+      triggerSessionExpiredRedirect();
+      return;
     }
     lastErrorTime = currentTime;
   } else {
@@ -1386,7 +1567,7 @@ export const teamInfoCall = async (accessToken: string, teamID: string | null) =
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/team/info` : `/team/info`;
     if (teamID) {
-      url = `${url}?team_id=${encodeURIComponent(teamID)}`;
+      url = `${url}?team_id=${teamID}`;
     }
     console.log("in teamInfoCall");
     const response = await fetch(url, {
@@ -7068,33 +7249,46 @@ export const testSearchToolConnection = async (accessToken: string, litellmParam
 };
 
 export const listMCPTools = async (
-  accessToken: string,
+  accessToken: string, 
   serverId: string,
-  customHeaders?: Record<string, string>,
+  customHeaders?: Record<string, string>
 ) => {
-  // Construct base URL
-  let url = proxyBaseUrl
-    ? `${proxyBaseUrl}/mcp-rest/tools/list?server_id=${serverId}`
-    : `/mcp-rest/tools/list?server_id=${serverId}`;
-
-  console.log("Fetching MCP tools from:", url);
-
-  const headers: Record<string, string> = {
-    [globalLitellmHeaderName]: `Bearer ${accessToken}`,
-    "Content-Type": "application/json",
-    ...customHeaders, // Merge custom headers for passthrough auth
-  };
-
-  let response: Response;
   try {
-    response = await fetch(url, {
+    // Construct base URL
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/mcp-rest/tools/list?server_id=${serverId}`
+      : `/mcp-rest/tools/list?server_id=${serverId}`;
+
+    console.log("Fetching MCP tools from:", url);
+
+    const headers: Record<string, string> = {
+      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      ...customHeaders, // Merge custom headers for passthrough auth
+    };
+
+    const response = await fetch(url, {
       method: "GET",
       headers,
     });
+
+    const data = await response.json();
+    console.log("Fetched MCP tools response:", data);
+
+    if (!response.ok) {
+      // If the server returned an error response, use it
+      if (data.error && data.message) {
+        throw new Error(data.message);
+      }
+      // Otherwise use a generic error
+      throw new Error("Failed to fetch MCP tools");
+    }
+
+    // Return the full response object which includes tools, error, message, and stack_trace
+    return data;
   } catch (error) {
-    // Network-level failure (no HTTP response). Preserve legacy shape so the
-    // caller can render a generic error message without crashing.
-    console.error("Failed to fetch MCP tools (network error):", error);
+    console.error("Failed to fetch MCP tools:", error);
+    // Return an error response in the same format as the API
     return {
       tools: [],
       error: "network_error",
@@ -7102,44 +7296,6 @@ export const listMCPTools = async (
       stack_trace: null,
     };
   }
-
-  let data: any = null;
-  try {
-    data = await response.json();
-  } catch (parseError) {
-    console.error("Failed to parse MCP tools response:", parseError);
-    return {
-      tools: [],
-      error: "parse_error",
-      message: "Failed to parse MCP tools response",
-      status: response.status,
-      statusText: response.statusText,
-      stack_trace: null,
-    };
-  }
-  console.log("Fetched MCP tools response:", data);
-
-  if (!response.ok) {
-    // Preserve the legacy "never throws" contract so existing callers
-    // (e.g. MCPToolPermissions, MCPAppsPanel, MCPConnectPicker) can continue
-    // to inspect `result.error` / `result.message`. Attach `status` so
-    // callers that need to react to auth failures (e.g. the useQuery in
-    // mcp_tools.tsx) can still detect 401s from the returned object.
-    const errorMessage =
-      (data && (data.message || data.error)) || "Failed to fetch MCP tools";
-    return {
-      tools: [],
-      error: (data && data.error) || `http_${response.status}`,
-      message: errorMessage,
-      status: response.status,
-      statusText: response.statusText,
-      details: data,
-      stack_trace: null,
-    };
-  }
-
-  // Return the full response object which includes tools, error, message, and stack_trace
-  return data;
 };
 
 interface CallMCPToolOptions {
@@ -7313,28 +7469,9 @@ export const tagInfoCall = async (accessToken: string, tagNames: string[]): Prom
   }
 };
 
-const formatYmd = (value: Date): string => {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, "0");
-  const day = String(value.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
-
-export const tagListCall = async (
-  accessToken: string,
-  startTime?: Date | null,
-  endTime?: Date | null,
-): Promise<TagListResponse> => {
+export const tagListCall = async (accessToken: string): Promise<TagListResponse> => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/tag/list` : `/tag/list`;
-
-    if (startTime && endTime) {
-      const params = new URLSearchParams({
-        start_date: formatYmd(startTime),
-        end_date: formatYmd(endTime),
-      });
-      url = `${url}?${params.toString()}`;
-    }
 
     const response = await fetch(url, {
       method: "GET",
@@ -8825,7 +8962,6 @@ interface ExchangeMcpOAuthTokenParams {
   clientSecret?: string;
   codeVerifier: string;
   redirectUri: string;
-  accessToken?: string | null;
 }
 
 export const exchangeMcpOAuthToken = async ({
@@ -8835,7 +8971,6 @@ export const exchangeMcpOAuthToken = async ({
   clientSecret,
   codeVerifier,
   redirectUri,
-  accessToken,
 }: ExchangeMcpOAuthTokenParams) => {
   const base = getProxyBaseUrl();
   const normalizedServerId = encodeURIComponent(serverId.trim());
@@ -8853,16 +8988,11 @@ export const exchangeMcpOAuthToken = async ({
   body.set("code_verifier", codeVerifier);
   body.set("redirect_uri", redirectUri);
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/x-www-form-urlencoded",
-  };
-  if (accessToken) {
-    headers["Authorization"] = `Bearer ${accessToken}`;
-  }
-
   const response = await fetch(url, {
     method: "POST",
-    headers,
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
     body: body.toString(),
   });
 
@@ -10036,148 +10166,4 @@ export const listMCPUserCredentials = async (
   });
   if (!response.ok) return [];
   return response.json();
-};
-
-// ============================================================
-// Memory management (/v1/memory)
-// ============================================================
-
-/**
- * Encode a memory key for use in a URL path segment.
- *
- * The backend route is declared as `/v1/memory/{key:path}`, which supports
- * slashes in the key (e.g. `user/123/notes`). Plain `encodeURIComponent`
- * encodes `/` as `%2F`, and some proxies/middlewares (nginx default,
- * CloudFlare, AWS ALB) either reject or silently re-decode `%2F`, which
- * can break the request before FastAPI ever sees it.
- *
- * We keep slashes literal as path delimiters while still encoding every
- * other potentially-unsafe character (spaces, `?`, `#`, `%`, etc.) per
- * path segment.
- */
-const encodeMemoryKeyForPath = (key: string): string =>
-  key.split("/").map(encodeURIComponent).join("/");
-
-export interface MemoryRow {
-  memory_id: string;
-  key: string;
-  value: string;
-  metadata?: unknown;
-  user_id?: string | null;
-  team_id?: string | null;
-  created_at?: string;
-  created_by?: string | null;
-  updated_at?: string;
-  updated_by?: string | null;
-}
-
-export interface MemoryListResponse {
-  memories: MemoryRow[];
-  total: number;
-}
-
-export const fetchMemoryList = async (
-  accessToken: string,
-  options: {
-    key?: string;
-    keyPrefix?: string;
-    page?: number;
-    pageSize?: number;
-  } = {},
-): Promise<MemoryListResponse> => {
-  const base = proxyBaseUrl ? `${proxyBaseUrl}/v1/memory` : `/v1/memory`;
-  const params = new URLSearchParams();
-  // keyPrefix takes precedence — backend also does, but we omit `key`
-  // to keep the URL clean and intent obvious.
-  if (options.keyPrefix) {
-    params.append("key_prefix", options.keyPrefix);
-  } else if (options.key) {
-    params.append("key", options.key);
-  }
-  if (options.page != null) params.append("page", String(options.page));
-  if (options.pageSize != null)
-    params.append("page_size", String(options.pageSize));
-  const url = params.toString() ? `${base}?${params.toString()}` : base;
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-  });
-  if (!response.ok) {
-    const errorData = await response.text();
-    throw new Error(errorData);
-  }
-  return response.json();
-};
-
-export const createMemory = async (
-  accessToken: string,
-  payload: { key: string; value: string; metadata?: unknown },
-): Promise<MemoryRow> => {
-  const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/memory` : `/v1/memory`;
-  const body: Record<string, unknown> = {
-    key: payload.key,
-    value: payload.value,
-  };
-  if (payload.metadata !== undefined) body.metadata = payload.metadata;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const errorData = await response.text();
-    throw new Error(errorData);
-  }
-  return response.json();
-};
-
-export const updateMemory = async (
-  accessToken: string,
-  key: string,
-  payload: { value?: string; metadata?: unknown },
-): Promise<MemoryRow> => {
-  const encoded = encodeMemoryKeyForPath(key);
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/v1/memory/${encoded}`
-    : `/v1/memory/${encoded}`;
-  const response = await fetch(url, {
-    method: "PUT",
-    headers: {
-      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const errorData = await response.text();
-    throw new Error(errorData);
-  }
-  return response.json();
-};
-
-export const deleteMemory = async (
-  accessToken: string,
-  key: string,
-): Promise<void> => {
-  const encoded = encodeMemoryKeyForPath(key);
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/v1/memory/${encoded}`
-    : `/v1/memory/${encoded}`;
-  const response = await fetch(url, {
-    method: "DELETE",
-    headers: {
-      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-  });
-  if (!response.ok) {
-    const errorData = await response.text();
-    throw new Error(errorData);
-  }
 };
