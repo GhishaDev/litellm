@@ -318,6 +318,172 @@ async def test_empty_exception_message_falls_back_to_type_name(caplog):
     assert "ProxyException" in auth_records[0].getMessage()
 
 
+class TestClassifyAuthFailure:
+    """Pure unit tests for `_classify_auth_failure` — guards the
+    contract that wrapped HTTPExceptions surface as a specific auth_*
+    type, so UI clients can route on `error.type` instead of regex-
+    matching free-text messages."""
+
+    def test_403_maps_to_permission_denied_regardless_of_detail(self):
+        from litellm.proxy.auth.auth_exception_handler import _classify_auth_failure
+
+        e = HTTPException(status_code=403, detail="anything at all")
+        assert _classify_auth_failure(e) == ProxyErrorTypes.auth_permission_denied
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "Key has expired",
+            "Authentication Error - Expired Key",
+            "Your API key has been revoked",
+            "Key has been deleted",
+        ],
+    )
+    def test_401_with_expired_marker_maps_to_session_expired(self, detail):
+        from litellm.proxy.auth.auth_exception_handler import _classify_auth_failure
+
+        e = HTTPException(status_code=401, detail=detail)
+        assert _classify_auth_failure(e) == ProxyErrorTypes.auth_session_expired
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "No auth header passed in",
+            "No authentication credentials supplied",
+            "Invalid API Key",
+            "Invalid token format",
+            "Invalid bearer credentials",
+            "Token not found in database",
+            "Key not found in database",
+            "Malformed authorization header",
+        ],
+    )
+    def test_401_with_invalid_credential_marker_maps_to_invalid_credentials(
+        self, detail
+    ):
+        from litellm.proxy.auth.auth_exception_handler import _classify_auth_failure
+
+        e = HTTPException(status_code=401, detail=detail)
+        assert _classify_auth_failure(e) == ProxyErrorTypes.auth_invalid_credentials
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "Not allowed to access this endpoint",
+            "Not authorized for this resource",
+            "Admin only endpoint",
+            "Admin-only operation",
+            "Master Key required",
+            "Requires admin role to access",
+            "Insufficient permission",
+            "Forbidden",
+            "Access denied",
+        ],
+    )
+    def test_401_with_permission_marker_maps_to_permission_denied(self, detail):
+        from litellm.proxy.auth.auth_exception_handler import _classify_auth_failure
+
+        e = HTTPException(status_code=401, detail=detail)
+        assert _classify_auth_failure(e) == ProxyErrorTypes.auth_permission_denied
+
+    def test_401_with_unknown_detail_falls_back_to_auth_error(self):
+        # Critical fallback: ambiguous messages must NOT silently map to
+        # a wrong specific type. The UI's heuristic handles auth_error.
+        from litellm.proxy.auth.auth_exception_handler import _classify_auth_failure
+
+        e = HTTPException(status_code=401, detail="something we have never seen")
+        assert _classify_auth_failure(e) == ProxyErrorTypes.auth_error
+
+    def test_401_with_empty_detail_falls_back_to_auth_error(self):
+        from litellm.proxy.auth.auth_exception_handler import _classify_auth_failure
+
+        e = HTTPException(status_code=401, detail="")
+        assert _classify_auth_failure(e) == ProxyErrorTypes.auth_error
+
+    def test_expired_markers_take_priority_over_invalid_markers(self):
+        # A revoked key can surface as both "invalid" and "revoked" — we
+        # prefer session_expired (the recovery flow is the same and the
+        # label is semantically more accurate).
+        from litellm.proxy.auth.auth_exception_handler import _classify_auth_failure
+
+        e = HTTPException(status_code=401, detail="Invalid API Key - has been revoked")
+        assert _classify_auth_failure(e) == ProxyErrorTypes.auth_session_expired
+
+
+@pytest.mark.asyncio
+async def test_wrapped_httpexception_carries_classified_type():
+    """Wire-format contract: a wrapped HTTPException emerges as a
+    ProxyException with the classified specific type, not the generic
+    `auth_error`. UI's PR D2 handleErrorResponse keys off this."""
+    handler = UserAPIKeyAuthExceptionHandler()
+    mock_request = MagicMock()
+    mock_request.headers = {}
+
+    with (
+        patch(
+            "litellm.proxy.proxy_server.general_settings",
+            {"allow_requests_on_db_unavailable": False},
+        ),
+        patch(
+            "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+            # AsyncMock's default return is a MagicMock — the wrapper at
+            # auth_exception_handler.py treats any truthy return as
+            # `transformed_exception` and replaces the original `e`,
+            # which destroys the type we want to assert. Pin
+            # return_value=None so the HTTPException flows through.
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        expired_http_exc = HTTPException(
+            status_code=401, detail="Authentication Error - Expired Key"
+        )
+        with pytest.raises(ProxyException) as exc_info:
+            await handler._handle_authentication_error(
+                expired_http_exc,
+                mock_request,
+                {},
+                "/v1/chat/completions",
+                None,
+                "test-key",
+            )
+
+    assert exc_info.value.type == ProxyErrorTypes.auth_session_expired
+
+
+@pytest.mark.asyncio
+async def test_wrapped_httpexception_permission_denied_carries_specific_type():
+    handler = UserAPIKeyAuthExceptionHandler()
+    mock_request = MagicMock()
+    mock_request.headers = {}
+
+    with (
+        patch(
+            "litellm.proxy.proxy_server.general_settings",
+            {"allow_requests_on_db_unavailable": False},
+        ),
+        patch(
+            "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+            # Pin return None — see comment in
+            # test_wrapped_httpexception_carries_classified_type.
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        perm_http_exc = HTTPException(
+            status_code=401, detail="Master Key required to access this endpoint"
+        )
+        with pytest.raises(ProxyException) as exc_info:
+            await handler._handle_authentication_error(
+                perm_http_exc,
+                mock_request,
+                {},
+                "/key/new",
+                None,
+                "test-key",
+            )
+
+    assert exc_info.value.type == ProxyErrorTypes.auth_permission_denied
+
+
 @pytest.mark.asyncio
 async def test_route_passed_to_post_call_failure_hook():
     """
