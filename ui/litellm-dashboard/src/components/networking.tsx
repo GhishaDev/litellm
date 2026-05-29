@@ -341,12 +341,66 @@ export interface CredentialsResponse {
 
 let lastErrorTime = 0;
 
+// PRIMARY signal — backend's structured `error.type` field. See
+// litellm.proxy._types.ProxyErrorTypes. The proxy classifies every wrapped
+// auth failure into one of these strings; the UI just dispatches the right
+// action by table lookup, no regex needed.
+//
+// Adding a new auth type? Mirror the docstring on the backend enum entry
+// here so the contract is visible from both sides.
+type AuthAction = "REDIRECT_LOGIN" | "TOAST" | "HEURISTIC";
+
+const AUTH_ERROR_TYPE_TO_ACTION: Record<string, AuthAction> = {
+  // Session is gone — local auth state is no good. Clear + redirect.
+  auth_session_expired: "REDIRECT_LOGIN",
+  auth_invalid_credentials: "REDIRECT_LOGIN",
+  expired_key: "REDIRECT_LOGIN", // legacy specific type, predates D1
+  token_not_found_in_db: "REDIRECT_LOGIN", // ditto
+
+  // Caller authenticated but lacks privilege for THIS endpoint. Toast
+  // only — bouncing them to login would be hostile UX.
+  auth_permission_denied: "TOAST",
+  key_model_access_denied: "TOAST",
+  team_model_access_denied: "TOAST",
+  user_model_access_denied: "TOAST",
+  org_model_access_denied: "TOAST",
+  project_model_access_denied: "TOAST",
+  key_vector_store_access_denied: "TOAST",
+  team_member_permission_error: "TOAST",
+
+  // Budget exhaustion is a permission-like state — the user IS who they
+  // say they are; their budget just ran out. Toast.
+  budget_exceeded: "TOAST",
+
+  // Generic auth_error means "backend couldn't classify" — fall back to
+  // the cookie + marker heuristic. Same for unknown types via the lookup
+  // miss path below.
+  auth_error: "HEURISTIC",
+};
+
+/**
+ * Extract the structured `type` field from a backend error body, if
+ * present. The proxy wraps responses two ways depending on the endpoint:
+ *   { error: { type: "...", message: "...", code: "401" } }   ← chat/completions
+ *   { type: "...", message: "..." }                            ← admin endpoints
+ *
+ * We accept either shape and return null when nothing recognizable is
+ * there (legacy backend before D1, or non-auth error path).
+ */
+const extractErrorType = (errorData: any): string | null => {
+  if (!errorData || typeof errorData === "string") return null;
+  const nested = errorData?.error?.type;
+  const flat = errorData?.type;
+  const value = typeof nested === "string" ? nested : typeof flat === "string" ? flat : null;
+  return value && value.length > 0 ? value : null;
+};
+
 // Substrings the backend uses across the various ways an auth credential
 // becomes invalid (expired, revoked, no token, malformed). Matching ANY of
 // these means "your session is gone — go log in again". String matching is
 // fragile by nature (backend wording can drift), so we treat these as a
-// best-effort fallback. The primary signal — when the caller can supply it
-// — is HTTP status + the cookie presence check, see `handleErrorResponse`.
+// best-effort fallback used ONLY when the structured `type` field is
+// missing or maps to "HEURISTIC" (i.e. generic `auth_error`).
 const SESSION_EXPIRED_SIGNALS = [
   "Authentication Error - Expired Key",
   "Authentication Error - Invalid",
@@ -375,61 +429,109 @@ const triggerSessionExpiredRedirect = () => {
 };
 
 /**
- * Status-aware error handler — preferred over `handleError` whenever the
- * caller has the original `Response` object. Distinguishes "your session is
- * gone, go log in" (401 with no cookie OR a session-expired marker in the
- * body) from "this endpoint requires more privilege" (403, or 401 while
- * the cookie is still present and the body shape says permission-only).
+ * Status-aware error handler. Three-tier decision:
  *
- * - 401 + session-expired signal -> clear cookies + redirect to login
- * - 403 -> toast only, never redirect (you're logged in, just not allowed)
- * - other errors -> delegate to `handleError` (same rate-limited path)
+ *   1. PREFERRED: structured `error.type` from the response body. The
+ *      backend (since the D1 taxonomy patch) emits one of:
+ *        auth_session_expired / auth_invalid_credentials → REDIRECT_LOGIN
+ *        auth_permission_denied / *_access_denied / *_permission_error → TOAST
+ *        budget_exceeded → TOAST
+ *        auth_error → HEURISTIC (fall through to step 2)
+ *      Type lookup is exact, cannot be wrong, and survives any backend
+ *      message wording drift.
+ *
+ *   2. FALLBACK heuristic (when type is missing or HEURISTIC): use HTTP
+ *      status + cookie presence + message-marker scan. This is the path
+ *      used if the backend is on an older build that hasn't been
+ *      upgraded to include the structured types yet, so the upgrade is
+ *      safely incremental.
+ *
+ *   3. Non-auth errors (4xx that aren't 401/403, 5xx, etc) delegate to
+ *      the legacy `handleError` (same rate-limited path; no redirect).
+ *
+ * Caller responsibility: pass the original `Response` object (or at
+ * least a `{status: number}`) so step 1/2 can dispatch correctly.
  */
 export const handleErrorResponse = async (
   response: Pick<Response, "status"> | { status: number },
   errorData: string | any,
 ): Promise<void> => {
   const status = response?.status;
+
+  // --- Step 1: try the structured type first --------------------------------
+  const errorType = extractErrorType(errorData);
+  if (errorType) {
+    const action = AUTH_ERROR_TYPE_TO_ACTION[errorType];
+    if (action === "REDIRECT_LOGIN") {
+      triggerSessionExpiredRedirect();
+      return;
+    }
+    if (action === "TOAST") {
+      NotificationsManager.fromBackend(errorData);
+      return;
+    }
+    // action === "HEURISTIC" or undefined (unknown type) → fall through
+    // to step 2. Don't return here — let status-based heuristic decide.
+  }
+
+  // --- Step 2: status-based heuristic (legacy / unknown type fallback) ------
   const errorString = typeof errorData === "string" ? errorData : JSON.stringify(errorData ?? "");
 
   if (status === 401) {
-    // The most reliable "session is gone" signal: the cookie is no longer
-    // present at all. If a session ever existed it has been cleared
-    // already, so push the user back to login.
-    const hasAuthCookie =
-      typeof window !== "undefined" && Boolean(getCookie("token") || getCookie("session_token"));
+    // No cookie = session is definitely gone (no race between server
+    // and client). If there IS a cookie, look for a message marker
+    // (less reliable, but covers older backends without the type field).
+    const hasAuthCookie = typeof window !== "undefined" && Boolean(getCookie("token"));
     if (!hasAuthCookie || isSessionExpiredFromMessage(errorString)) {
       triggerSessionExpiredRedirect();
       return;
     }
-    // 401 but the cookie is still present — likely "your role can't call
-    // THIS specific endpoint" expressed as 401 (LiteLLM uses 401 for both
-    // session-gone and role-mismatch, sigh). Show a toast, don't bounce
-    // the user out of a perfectly fine session.
+    // 401 + cookie + no expiry marker → treat as permission-denied to
+    // avoid bouncing a still-valid session out for what is probably a
+    // role mismatch.
     NotificationsManager.fromBackend(errorData);
     return;
   }
 
   if (status === 403) {
-    // Forbidden = "I know who you are, but you can't do this". Never log
-    // the user out for a 403; just surface what the backend said.
+    // Forbidden — authenticated but not authorized. Never redirect.
     NotificationsManager.fromBackend(errorData);
     return;
   }
 
-  // Non-auth errors fall through to the existing rate-limited handler.
+  // --- Step 3: non-auth errors → legacy rate-limited handler ---------------
   await handleError(errorData);
 };
 
 export const handleError = async (errorData: string | any) => {
   const currentTime = Date.now();
   if (currentTime - lastErrorTime > 60000) {
-    // 60000 milliseconds = 60 seconds
-    // Convert errorData to string if it isn't already
+    // 60000 milliseconds = 60 seconds.
+
+    // STEP 1: prefer the structured `error.type` from the backend (D1
+    // contract). This is the path that actually fires for the ~30
+    // legacy callers that didn't migrate to handleErrorResponse — by
+    // making the legacy entry point smart, every fetch site
+    // automatically benefits from the D1 backend taxonomy without
+    // touching their call sites.
+    const errorType = extractErrorType(errorData);
+    if (errorType) {
+      const action = AUTH_ERROR_TYPE_TO_ACTION[errorType];
+      if (action === "REDIRECT_LOGIN") {
+        lastErrorTime = currentTime;
+        triggerSessionExpiredRedirect();
+        return;
+      }
+      // action === "TOAST" or "HEURISTIC" or unknown — fall through to
+      // the legacy marker path. We deliberately do NOT toast here:
+      // handleError is the rate-limited error funnel and not every
+      // caller wants its own toast; preserving the legacy behavior of
+      // "do nothing for non-session-gone" keeps backward compatibility.
+    }
+
+    // STEP 2: legacy marker-based fallback for older backend builds
+    // and `auth_error` (generic, no type signal) cases.
     const errorString = typeof errorData === "string" ? errorData : JSON.stringify(errorData);
-    // Match any known session-expired marker, not just the historical
-    // "Expired Key" wording — the backend emits several variants and the
-    // single-string match used to miss most of them.
     if (isSessionExpiredFromMessage(errorString)) {
       lastErrorTime = currentTime;
       triggerSessionExpiredRedirect();
