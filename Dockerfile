@@ -47,7 +47,30 @@ RUN uv sync --frozen --no-install-project --no-install-workspace --no-default-gr
 # Copy full source tree
 COPY . .
 
-# Build Admin UI before final sync
+# Build the LiteLLM dashboard UI from source. Upstream commits a
+# pre-built bundle at litellm/proxy/_experimental/out/ and expects
+# `build_admin_ui.sh` to be a no-op customization hook for enterprise.
+# That model means a UI source change in this fork (under
+# ui/litellm-dashboard/src/) does NOT reach the runtime image unless
+# we rebuild here — and the upstream-shipped bundle becomes the
+# served UI by default, hiding our patches at deploy time.
+#
+# So: always run `npm run build` from current source, overwrite
+# `_experimental/out/`, and prune node_modules to keep the builder
+# layer slim. The committed bundle (now .gitignored) is treated as a
+# "seed for fresh clones that don't run docker build" only — it is
+# always overwritten by this step in any image that actually ships.
+RUN cd ui/litellm-dashboard && \
+    npm ci --no-audit --no-fund --prefer-offline && \
+    npm run build && \
+    rm -rf /app/litellm/proxy/_experimental/out && \
+    cp -r out /app/litellm/proxy/_experimental/out && \
+    cd /app && \
+    rm -rf ui/litellm-dashboard/node_modules ui/litellm-dashboard/out && \
+    npm cache clean --force 2>/dev/null || true
+
+# Preserved upstream hook: enterprise customizations can still override
+# the bundle via the canonical build_admin_ui.sh path. Default is no-op.
 RUN sed -i 's/\r$//' docker/build_admin_ui.sh && chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
 
 # Install project and workspace packages (fast - deps already cached)
