@@ -119,3 +119,4 @@ litellm/proxy/_experimental/out/
 ui/litellm-dashboard/out/
 ui/litellm-dashboard/.next/
 ui/litellm-dashboard/node_modules/
+.gstack/

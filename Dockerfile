@@ -60,14 +60,23 @@ COPY . .
 # layer slim. The committed bundle (now .gitignored) is treated as a
 # "seed for fresh clones that don't run docker build" only — it is
 # always overwritten by this step in any image that actually ships.
-RUN cd ui/litellm-dashboard && \
-    npm ci --no-audit --no-fund --prefer-offline && \
-    npm run build && \
-    rm -rf /app/litellm/proxy/_experimental/out && \
-    cp -r out /app/litellm/proxy/_experimental/out && \
-    cd /app && \
-    rm -rf ui/litellm-dashboard/node_modules ui/litellm-dashboard/out && \
-    npm cache clean --force 2>/dev/null || true
+RUN set -eux; \
+    cd ui/litellm-dashboard; \
+    # Builder image's npm doesn't recognize min-release-age (npm 11+
+    # config in the project's .npmrc for local-dev supply-chain
+    # hardening) and treats it as a fatal `npm ci` config error. The
+    # .npmrc comment notes "npm ci ignores this" — true for newer
+    # npm, not for the builder's older one. Override to 0 just for
+    # this RUN so the lockfile install still works.
+    NPM_CONFIG_MIN_RELEASE_AGE=0 npm ci --no-audit --no-fund --prefer-offline; \
+    npm run build; \
+    test -f out/index.html || { echo "FATAL: next build did not produce out/index.html"; ls -la out/ 2>/dev/null; exit 1; }; \
+    rm -rf /app/litellm/proxy/_experimental/out; \
+    cp -r out /app/litellm/proxy/_experimental/out; \
+    cd /app; \
+    rm -rf ui/litellm-dashboard/node_modules ui/litellm-dashboard/out; \
+    { npm cache clean --force 2>/dev/null || true; }; \
+    test -f /app/litellm/proxy/_experimental/out/index.html || { echo "FATAL: copy did not land the bundle"; exit 1; }
 
 # Preserved upstream hook: enterprise customizations can still override
 # the bundle via the canonical build_admin_ui.sh path. Default is no-op.
