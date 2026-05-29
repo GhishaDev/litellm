@@ -3570,7 +3570,44 @@ class ProxyErrorTypes(str, enum.Enum):
 
     auth_error = "auth_error"
     """
-    General authentication error
+    General authentication error. Use only when the failure does not fit
+    one of the more specific auth_* types below — UI clients (litellm
+    dashboard) fall back to a heuristic redirect decision when they see
+    this type, so prefer a precise type whenever the cause is known.
+    """
+
+    auth_session_expired = "auth_session_expired"
+    """
+    The caller's session/token was once valid but is no longer (expired,
+    revoked, deleted, key rotated). UI clients should clear local auth
+    state and redirect to the login page. Distinguish from
+    `auth_invalid_credentials` — that one means the credential format was
+    bad from the start (never authenticated).
+    """
+
+    auth_invalid_credentials = "auth_invalid_credentials"
+    """
+    The supplied credential is malformed, never existed, or does not
+    parse — e.g. missing Authorization header, garbled bearer token, key
+    not found in DB. UI clients should treat this the same as
+    `auth_session_expired` (clear state + login) because there is no
+    valid session to recover.
+    """
+
+    auth_permission_denied = "auth_permission_denied"
+    """
+    The caller is authenticated but lacks the role / scope / model
+    access needed for this specific endpoint or resource (admin-only,
+    team_id mismatch, model not in allowed list). UI clients must NOT
+    redirect to login — the session is still valid, only this one
+    operation is forbidden. Surface as a toast.
+
+    Note: `key_model_access_denied`, `team_model_access_denied`,
+    `team_member_permission_error`, and the other granular
+    *_access_denied / *_permission_error types are already specific
+    enough; this catch-all is for the cases where the cause is "you're
+    not allowed" but doesn't fit those buckets (e.g. master-key-required
+    on a non-master-key request).
     """
 
     internal_server_error = "internal_server_error"
