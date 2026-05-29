@@ -506,12 +506,32 @@ export const handleErrorResponse = async (
 export const handleError = async (errorData: string | any) => {
   const currentTime = Date.now();
   if (currentTime - lastErrorTime > 60000) {
-    // 60000 milliseconds = 60 seconds
-    // Convert errorData to string if it isn't already
+    // 60000 milliseconds = 60 seconds.
+
+    // STEP 1: prefer the structured `error.type` from the backend (D1
+    // contract). This is the path that actually fires for the ~30
+    // legacy callers that didn't migrate to handleErrorResponse — by
+    // making the legacy entry point smart, every fetch site
+    // automatically benefits from the D1 backend taxonomy without
+    // touching their call sites.
+    const errorType = extractErrorType(errorData);
+    if (errorType) {
+      const action = AUTH_ERROR_TYPE_TO_ACTION[errorType];
+      if (action === "REDIRECT_LOGIN") {
+        lastErrorTime = currentTime;
+        triggerSessionExpiredRedirect();
+        return;
+      }
+      // action === "TOAST" or "HEURISTIC" or unknown — fall through to
+      // the legacy marker path. We deliberately do NOT toast here:
+      // handleError is the rate-limited error funnel and not every
+      // caller wants its own toast; preserving the legacy behavior of
+      // "do nothing for non-session-gone" keeps backward compatibility.
+    }
+
+    // STEP 2: legacy marker-based fallback for older backend builds
+    // and `auth_error` (generic, no type signal) cases.
     const errorString = typeof errorData === "string" ? errorData : JSON.stringify(errorData);
-    // Match any known session-expired marker, not just the historical
-    // "Expired Key" wording — the backend emits several variants and the
-    // single-string match used to miss most of them.
     if (isSessionExpiredFromMessage(errorString)) {
       lastErrorTime = currentTime;
       triggerSessionExpiredRedirect();

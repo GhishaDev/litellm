@@ -345,6 +345,97 @@ describe("handleErrorResponse - type-based auth routing (D1 contract)", () => {
   });
 });
 
+describe("handleError (legacy) - now also reads error.type", () => {
+  // The 30+ existing callers use handleError(errorData) — they don't
+  // pass a Response object. To make D1's structured types actually
+  // affect production, the legacy handler itself must read error.type.
+  // This describe covers that "make it work for callers we didn't
+  // migrate" path.
+  //
+  // handleError throttles itself with a 60s rate limit (lastErrorTime
+  // module-level), so back-to-back tests would be suppressed. Use
+  // fake timers + advance system time well past 60s between each test
+  // so every test sees a clean rate-limit window.
+
+  // Use a fake clock anchored once for the whole describe so each test
+  // sees a monotonically increasing time and the rate-limit window
+  // always clears between calls. afterEach -> useRealTimers would reset
+  // the clock back to OS time and recreate the throttle window.
+  const baseTime = new Date("2030-01-01T00:00:00Z").getTime();
+  let testCounter = 0;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    testCounter += 1;
+    // Each test runs at base + N hours; rate-limit window (60s) is
+    // dwarfed by the per-test 1h gap.
+    vi.setSystemTime(new Date(baseTime + testCounter * 3600 * 1000));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("redirects when error.type=auth_session_expired", async () => {
+    await Networking.handleError({
+      error: { type: "auth_session_expired", message: "Key has expired" },
+    });
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("redirects when error.type=auth_invalid_credentials (D1's new type)", async () => {
+    await Networking.handleError({
+      error: { type: "auth_invalid_credentials", message: "No api key passed in." },
+    });
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("redirects when error.type=token_not_found_in_db (existing legacy specific type)", async () => {
+    await Networking.handleError({
+      error: { type: "token_not_found_in_db", message: "Invalid proxy server token..." },
+    });
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("does NOT redirect when error.type=auth_permission_denied (the bug)", async () => {
+    // legacy handleError previously had no way to know this was a
+    // permission case, so it just did nothing (correct outcome). With
+    // the type-aware path, we still do nothing for permission types —
+    // no false-positive redirect.
+    await Networking.handleError({
+      error: { type: "auth_permission_denied", message: "Master Key required" },
+    });
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("does NOT redirect when error.type=budget_exceeded", async () => {
+    await Networking.handleError({
+      error: { type: "budget_exceeded", message: "Budget exceeded" },
+    });
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("falls back to marker heuristic when no type but message has marker", async () => {
+    // Older backend without D1 — body is just a string with a marker.
+    await Networking.handleError("Authentication Error - Expired Key");
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+
+  it("does nothing when no type, no marker (legacy behavior preserved)", async () => {
+    await Networking.handleError("Some unrelated error message");
+    expect(clearTokenCookies).not.toHaveBeenCalled();
+  });
+
+  it("type=auth_error falls through to marker heuristic", async () => {
+    // Backend gave up on classifying; marker present in message.
+    await Networking.handleError({
+      error: { type: "auth_error", message: "Authentication Error - Expired Key" },
+    });
+    expect(clearTokenCookies).toHaveBeenCalledOnce();
+  });
+});
+
 describe("loginCall - storeLoginToken integration", () => {
   const originalFetch = global.fetch;
 
