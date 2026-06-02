@@ -1591,6 +1591,7 @@ def completion(  # type: ignore # noqa: PLR0915
             litellm_request_debug=kwargs.get("litellm_request_debug", False),
             tpm=kwargs.get("tpm"),
             rpm=kwargs.get("rpm"),
+            anthropic_beta_overrides=kwargs.get("anthropic_beta_overrides"),
         )
         cast(LiteLLMLoggingObj, logging).update_environment_variables(
             model=model,

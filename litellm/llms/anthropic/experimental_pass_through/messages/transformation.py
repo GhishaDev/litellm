@@ -162,6 +162,7 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
         headers = self._update_headers_with_anthropic_beta(
             headers=headers,
             optional_params=optional_params,
+            litellm_params=litellm_params,
         )
 
         return headers, api_base
@@ -315,6 +316,7 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
         headers: dict,
         optional_params: dict,
         custom_llm_provider: str = "anthropic",
+        litellm_params: Optional[dict] = None,
     ) -> dict:
         """
         Auto-inject anthropic-beta headers based on features used.
@@ -396,5 +398,22 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
 
         if beta_values:
             headers["anthropic-beta"] = ",".join(sorted(beta_values))
+
+        # Apply per-deployment anthropic_beta_overrides surgically. Unlike
+        # the chat path (which runs every beta through the provider mapping),
+        # the /v1/messages passthrough must not drop headers that happen to
+        # be absent from the anthropic provider mapping -- it is meant to
+        # forward whatever betas the auto-injector produced. So we only
+        # touch headers explicitly listed in the override map.
+        if litellm_params:
+            from litellm.anthropic_beta_headers_manager import (
+                apply_overrides_to_anthropic_beta_header,
+            )
+
+            overrides = (litellm_params or {}).get("anthropic_beta_overrides")
+            if overrides:
+                headers = apply_overrides_to_anthropic_beta_header(
+                    headers=headers, overrides=overrides
+                )
 
         return headers
