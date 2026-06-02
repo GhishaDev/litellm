@@ -2025,7 +2025,11 @@ class BaseLLMHTTPHandler:
         )
 
         headers = update_headers_with_filtered_beta(
-            headers=headers, provider=custom_llm_provider
+            headers=headers,
+            provider=custom_llm_provider,
+            overrides=(dict(litellm_params) if litellm_params else {}).get(
+                "anthropic_beta_overrides"
+            ),
         )
 
         logging_obj.update_from_kwargs(

@@ -387,6 +387,7 @@ class AnthropicChatCompletion(BaseLLM):
             headers=headers,
             request_data=data,
             provider=custom_llm_provider,
+            overrides=(litellm_params or {}).get("anthropic_beta_overrides"),
         )
 
         ## LOGGING
