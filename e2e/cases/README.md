@@ -57,18 +57,45 @@ the full suite, $0 for `--mock-only`.
 
 `--mock-only` runs every case in the table above whose `Tier` column is
 `mock` or `both` — currently 15 of 23 — against the in-network mock
-provider (no real API calls, no money spent). It:
+provider (no real API calls, no money spent).
 
-1. Auto-starts the proxy with `--with-mock` and a mock-redirected `.env`
-   overlay (`ANTHROPIC_API_BASE` → `http://mock:8080`,
-   `OPENAI_API_BASE` → `http://mock:8080/v1`,
-   `GEMINI_API_BASE` → `http://mock:8080/v1beta`).
-2. Skips every `Tier=real` case (1, 2, 3, 5, 8, 9, 19) with a clear
-   reason ("requires real provider semantics — prompt caching tokens,
-   thinking-signature blocks, etc.").
-3. Restores the original `.env` on exit.
+**You must set up the env yourself first** (the runner refuses to start
+with a clear error otherwise). Minimal `.env` overlay:
 
-Suitable for PR-gate CI: deterministic, free, ~30 seconds.
+```bash
+# e2e/.env — needed for --mock-only
+ANTHROPIC_API_KEY=sk-mock-not-used
+OPENAI_API_KEY=sk-mock-not-used
+GEMINI_API_KEY=sk-mock-not-used
+ANTHROPIC_API_BASE=http://mock:8080
+OPENAI_API_BASE=http://mock:8080/v1
+GEMINI_API_BASE=http://mock:8080/v1beta
+# tuned so case 13's streaming_phase > 1000ms assertion passes:
+MOCK_TTFT_MS=500
+MOCK_TPS=50
+MOCK_CHUNKS=200
+```
+
+Then:
+
+```bash
+e2e/tools/proxy stop
+e2e/tools/proxy start --with-mock
+e2e/tools/run-all-cases --mock-only
+```
+
+The runner preflights:
+
+1. proxy is ready at `$PROXY_URL`,
+2. `litellm-e2e-mock` sidecar is up,
+3. `ANTHROPIC_API_BASE` inside the proxy container points at
+   `http://mock:8080` (otherwise it'd hit a real Anthropic endpoint).
+
+If any check fails it prints the exact `e2e/.env` + restart command and
+exits 2. With all three green it skips Tier=real cases (1, 2, 3, 5, 8,
+9, 19 — they need real provider semantics: prompt-cache tokens,
+thinking-signature blocks, label-coverage paths) and runs the
+remaining 14 against the mock in ~30 s. Provider cost: $0.
 
 See `e2e/_config/mock_provider.py` for the mock contract (TTFT/TPS env
 vars, `X-Mock-*` headers, `X-Mock-Tool-Call`, `X-Mock-Fail`).
