@@ -224,6 +224,7 @@ def get_provider_name(provider: str) -> str:
 def filter_and_transform_beta_headers(
     beta_headers: List[str],
     provider: str,
+    overrides: Optional[Dict[str, Optional[str]]] = None,
 ) -> List[str]:
     """
     Filter and transform beta headers based on provider's mapping configuration.
@@ -232,10 +233,25 @@ def filter_and_transform_beta_headers(
     1. Only allows headers that are present in the provider's mapping keys
     2. Filters out headers with null values (unsupported)
     3. Maps headers to provider-specific names (e.g., advanced-tool-use -> tool-search-tool)
+    4. Optional per-call ``overrides`` overlay on top of the provider mapping
+
+    Overlay semantics for ``overrides``: for each input header, if it appears
+    as a key in ``overrides`` the overlay wins outright (no fallback to the
+    provider table):
+
+    - ``overrides[header] is None`` or ``""`` -> drop (suppress entirely)
+    - ``overrides[header]`` is a non-empty string -> use that string verbatim
+
+    Headers not present in ``overrides`` follow the existing
+    ``provider_mapping`` behavior unchanged.
 
     Args:
         beta_headers: List of Anthropic beta header values
         provider: Provider name (e.g., "anthropic", "bedrock", "vertex_ai")
+        overrides: Optional per-call overlay map. Single level (no chain
+            resolution). Mutually exclusive with the provider table on a
+            per-header basis: when a header is in overrides, the provider
+            table is not consulted for that header.
 
     Returns:
         List of filtered and transformed beta headers for the provider
@@ -253,6 +269,23 @@ def filter_and_transform_beta_headers(
 
     for header in beta_headers:
         header = header.strip()
+
+        # Per-call overlay wins outright when the header is in the override map.
+        # Empty-string and None both mean "suppress this header".
+        if overrides is not None and header in overrides:
+            mapped_override = overrides[header]
+            if mapped_override is None or mapped_override == "":
+                verbose_logger.debug(
+                    f"Dropping beta header '{header}' for provider '{provider}' "
+                    f"due to anthropic_beta_overrides suppression"
+                )
+                continue
+            verbose_logger.debug(
+                f"Rewriting beta header '{header}' -> '{mapped_override}' for "
+                f"provider '{provider}' due to anthropic_beta_overrides"
+            )
+            filtered_headers.add(mapped_override)
+            continue
 
         # Check if header is in the mapping
         if header not in provider_mapping:
@@ -332,6 +365,7 @@ def get_provider_beta_header(
 def update_headers_with_filtered_beta(
     headers: dict,
     provider: str,
+    overrides: Optional[Dict[str, Optional[str]]] = None,
 ) -> dict:
     """
     Update headers dict by filtering and transforming anthropic-beta header values.
@@ -340,6 +374,8 @@ def update_headers_with_filtered_beta(
     Args:
         headers: Request headers dict (will be modified in place)
         provider: Provider name
+        overrides: Optional per-call overlay map (see
+            :func:`filter_and_transform_beta_headers`)
 
     Returns:
         Updated headers dict
@@ -355,6 +391,7 @@ def update_headers_with_filtered_beta(
     filtered_beta_values = filter_and_transform_beta_headers(
         beta_headers=beta_values,
         provider=provider,
+        overrides=overrides,
     )
 
     # Update or remove the header
@@ -371,6 +408,7 @@ def update_request_with_filtered_beta(
     headers: dict,
     request_data: dict,
     provider: str,
+    overrides: Optional[Dict[str, Optional[str]]] = None,
 ) -> tuple[dict, dict]:
     """
     Update both headers and request body beta fields based on provider support.
@@ -380,11 +418,16 @@ def update_request_with_filtered_beta(
         headers: Request headers dict (will be modified in place)
         request_data: Request body dict (will be modified in place)
         provider: Provider name
+        overrides: Optional per-call overlay map (see
+            :func:`filter_and_transform_beta_headers`). Applied to both the
+            HTTP header and the body-level ``anthropic_beta`` array.
 
     Returns:
         Tuple of (updated headers, updated request_data)
     """
-    headers = update_headers_with_filtered_beta(headers=headers, provider=provider)
+    headers = update_headers_with_filtered_beta(
+        headers=headers, provider=provider, overrides=overrides
+    )
 
     existing_body_betas = request_data.get("anthropic_beta")
     if not existing_body_betas:
@@ -393,6 +436,7 @@ def update_request_with_filtered_beta(
     filtered_body_betas = filter_and_transform_beta_headers(
         beta_headers=existing_body_betas,
         provider=provider,
+        overrides=overrides,
     )
 
     if filtered_body_betas:
@@ -401,6 +445,72 @@ def update_request_with_filtered_beta(
         request_data.pop("anthropic_beta", None)
 
     return headers, request_data
+
+
+def apply_overrides_to_anthropic_beta_header(
+    headers: dict,
+    overrides: Optional[Dict[str, Optional[str]]],
+) -> dict:
+    """
+    Apply per-call ``anthropic_beta_overrides`` surgically to the
+    ``anthropic-beta`` HTTP header without consulting any provider mapping.
+
+    Unlike :func:`update_headers_with_filtered_beta` (which re-filters the
+    full header through the provider table and drops anything unknown),
+    this helper touches **only** headers explicitly listed as keys in
+    ``overrides``. Everything else passes through unchanged. Use this on
+    code paths that intentionally forward whatever betas the auto-
+    injector produced -- e.g. the experimental Anthropic /v1/messages
+    passthrough -- where running through a provider mapping would
+    accidentally strip legitimate betas not yet enumerated for that
+    provider.
+
+    Resolution per header:
+
+    - ``overrides[header] is None`` or ``""`` -> drop
+    - non-empty string -> rewrite to that string
+    - header not in ``overrides`` -> keep as-is
+
+    Args:
+        headers: Request headers dict (modified in place)
+        overrides: Per-call overlay map. ``None`` or empty is a no-op.
+
+    Returns:
+        The updated ``headers`` dict.
+    """
+    if not overrides:
+        return headers
+
+    existing_beta = headers.get("anthropic-beta")
+    if not existing_beta:
+        return headers
+
+    out: List[str] = []
+    for raw in existing_beta.split(","):
+        v = raw.strip()
+        if not v:
+            continue
+        if v in overrides:
+            mapped = overrides[v]
+            if mapped is None or mapped == "":
+                verbose_logger.debug(f"apply_overrides: suppressing beta header '{v}'")
+                continue
+            verbose_logger.debug(
+                f"apply_overrides: rewriting beta header '{v}' -> '{mapped}'"
+            )
+            out.append(mapped)
+        else:
+            out.append(v)
+
+    if out:
+        # Preserve original ordering after dedup
+        seen: Set[str] = set()
+        deduped = [x for x in out if not (x in seen or seen.add(x))]
+        headers["anthropic-beta"] = ",".join(deduped)
+    else:
+        headers.pop("anthropic-beta", None)
+
+    return headers
 
 
 def get_unsupported_headers(provider: str) -> List[str]:

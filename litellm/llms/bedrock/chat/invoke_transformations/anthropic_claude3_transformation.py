@@ -108,6 +108,7 @@ class AmazonAnthropicClaudeConfig(AmazonInvokeConfig, AnthropicConfig):
             messages=messages,
             optional_params=optional_params,
             headers=headers,
+            litellm_params=litellm_params,
         )
         if beta_list:
             _anthropic_request["anthropic_beta"] = beta_list
@@ -136,6 +137,7 @@ class AmazonAnthropicClaudeConfig(AmazonInvokeConfig, AnthropicConfig):
             messages=messages,
             optional_params=optional_params,
             headers=headers,
+            litellm_params=litellm_params,
         )
         if beta_list:
             _anthropic_request["anthropic_beta"] = beta_list
@@ -184,6 +186,7 @@ class AmazonAnthropicClaudeConfig(AmazonInvokeConfig, AnthropicConfig):
         messages: List[AllMessageValues],
         optional_params: dict,
         headers: dict,
+        litellm_params: Optional[dict] = None,
     ) -> List[str]:
         tools = optional_params.get("tools")
         tool_search_used = self.is_tool_search_used(tools)
@@ -212,6 +215,7 @@ class AmazonAnthropicClaudeConfig(AmazonInvokeConfig, AnthropicConfig):
         auto_beta_list = filter_and_transform_beta_headers(
             beta_headers=list(beta_set - user_beta_set),
             provider="bedrock",
+            overrides=(litellm_params or {}).get("anthropic_beta_overrides"),
         )
         return sorted(user_beta_set.union(set(auto_beta_list)))
 

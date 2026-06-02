@@ -238,6 +238,17 @@ class GenericLiteLLMParams(CredentialLiteLLMParams, CustomPricingLiteLLMParams):
     vector_store_id: Optional[str] = None
     milvus_text_field: Optional[str] = None
 
+    # Per-deployment override map for Anthropic beta headers. Applied as an
+    # overlay on top of the built-in anthropic_beta_headers_config.json. Each
+    # entry maps the beta header LiteLLM would auto-inject to either a
+    # replacement name (rewrite) or None / empty string (suppress). Used to
+    # adapt to backends that accept a different set of beta flag names than
+    # the chosen `custom_llm_provider` route assumes -- for example, routing
+    # Anthropic-spec requests through a Bedrock-backed gateway that rejects
+    # `advanced-tool-use-2025-11-20` but accepts `tool-search-tool-2025-10-19`.
+    # See litellm/anthropic_beta_headers_manager.py for resolution semantics.
+    anthropic_beta_overrides: Optional[Dict[str, Optional[str]]] = None
+
     @model_validator(mode="before")
     @classmethod
     def preprocess_input_data(cls, data: Any) -> Any:
@@ -362,6 +373,10 @@ class LiteLLMParamsTypedDict(TypedDict, total=False):
     # deployment budgets
     max_budget: Optional[float]
     budget_duration: Optional[str]
+
+    # Per-deployment override map for Anthropic beta headers. See
+    # GenericLiteLLMParams.anthropic_beta_overrides for the full description.
+    anthropic_beta_overrides: Optional[Dict[str, Optional[str]]]
 
 
 class DeploymentTypedDict(TypedDict, total=False):
