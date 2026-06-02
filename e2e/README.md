@@ -94,6 +94,53 @@ e2e/tools/proxy start
 e2e/tools/proxy stop
 ```
 
+## Mock provider (zero provider cost)
+
+For tests that don't need real LLM behavior — memory pressure, retry
+amplification, slow streaming, callback queue retention, error paths —
+start the proxy with the in-network mock instead of a real provider:
+
+```bash
+e2e/tools/proxy start --with-mock
+```
+
+This also brings up a second container (`litellm-e2e-mock`, only when
+this flag is set) that serves both OpenAI- and Anthropic-shape endpoints
+plus Langfuse / generic-webhook callback sinks. Two extra `model_list`
+entries get added automatically to the rendered config:
+
+- `mock-openai`     → `openai/mock-model`        → `http://mock:8080/v1`
+- `mock-anthropic`  → `anthropic/mock-claude`    → `http://mock:8080`
+
+Behavior is controlled per-process by env vars (set in the shell before
+`proxy start`):
+
+| Env var | Default | What it does |
+|---|---|---|
+| `MOCK_TTFT_MS` | `0` | delay (ms) before first streamed chunk |
+| `MOCK_TPS` | `100` | streamed chunks per second |
+| `MOCK_CHUNKS` | `100` | total chunks per streamed response |
+| `MOCK_CALLBACK_DELAY` | `0` | seconds the callback sinks sleep before responding |
+| `MOCK_FAIL_RATE` | `0` | 0..1 fraction of provider calls returning 503 |
+
+Per-request overrides go in the JSON body (e.g. `mock_chunks`,
+`mock_ttft_ms`, `mock_full_chars`). See the docstring at the top of
+`e2e/_config/mock_provider.py` for the full contract.
+
+Example use cases (canonical reproducer: `cases/23_mock_memory_pressure.md`):
+
+```bash
+# Match a production "slow streaming" profile (TTFT=15s, TPS=30):
+MOCK_TTFT_MS=15000 MOCK_TPS=30 MOCK_CHUNKS=1500 \
+  e2e/tools/proxy start --with-mock
+
+# Retry-amplification: 30% of provider calls return 503
+MOCK_FAIL_RATE=0.3 e2e/tools/proxy start --with-mock
+
+# Slow Langfuse / webhook consumer (drains 8s per batch)
+MOCK_CALLBACK_DELAY=8 e2e/tools/proxy start --with-mock
+```
+
 ## How Claude uses this
 
 Tell Claude:
