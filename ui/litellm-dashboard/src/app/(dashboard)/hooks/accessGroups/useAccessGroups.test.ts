@@ -208,7 +208,10 @@ describe("useAccessGroups", () => {
     expect(result.current.error).toBeInstanceOf(Error);
     expect((result.current.error as Error).message).toBe("Forbidden");
     expect(result.current.data).toBeUndefined();
-    expect(networking.handleError).toHaveBeenCalledWith("Forbidden");
+    // handleError now receives the raw error object (not the derived string)
+    // so its built-in `extractErrorType` can dispatch on `error.type` for
+    // auth-related redirects (D1 taxonomy). See networking.tsx:507.
+    expect(networking.handleError).toHaveBeenCalledWith({ detail: "Forbidden" });
   });
 
   it("should return empty array when API returns empty list", async () => {
