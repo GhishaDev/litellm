@@ -7341,13 +7341,14 @@ export const callMCPTool = async (
     if (!response.ok) {
       let errorMessage = "Network response was not ok";
       let errorDetails = null;
+      let errorData: any = null;
 
       // First, try to get the response as text to see what we're dealing with
       const responseText = await response.text();
 
       try {
         // Try to parse as JSON
-        const errorData = JSON.parse(responseText);
+        errorData = JSON.parse(responseText);
 
         if (errorData.detail) {
           if (typeof errorData.detail === "string") {
@@ -7373,7 +7374,9 @@ export const callMCPTool = async (
       (enhancedError as any).statusText = response.statusText;
       (enhancedError as any).details = errorDetails;
 
-      handleError(errorData);
+      // Pass the parsed object when JSON parsing succeeded so handleError can
+      // dispatch on `error.type` (D1 taxonomy); fall back to raw text otherwise.
+      handleError(errorData ?? responseText);
       throw enhancedError;
     }
 
