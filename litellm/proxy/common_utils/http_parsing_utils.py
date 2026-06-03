@@ -112,9 +112,12 @@ async def _read_request_body(request: Optional[Request]) -> Dict:
                     try:
                         parsed_body = json.loads(body_str)
                     except json.JSONDecodeError:
-                        # If both orjson and json.loads fail, throw a proper error
-                        verbose_proxy_logger.error(
-                            f"Invalid JSON payload received: {str(e)}"
+                        # If both orjson and json.loads fail, throw a proper error.
+                        # This is a client-formatting problem (400), not a server
+                        # bug — WARN, no traceback. The ProxyException raised
+                        # below is the response; this line is purely diagnostic.
+                        verbose_proxy_logger.warning(
+                            "Invalid JSON payload received: %s", str(e)
                         )
                         raise ProxyException(
                             message=f"Invalid JSON payload: {str(e)}",
@@ -128,11 +131,14 @@ async def _read_request_body(request: Optional[Request]) -> Dict:
         return parsed_body
 
     except (json.JSONDecodeError, orjson.JSONDecodeError, ProxyException) as e:
-        # Re-raise ProxyException as-is
-        verbose_proxy_logger.error(f"Invalid JSON payload received: {str(e)}")
+        # Re-raise ProxyException as-is. Same rationale as above — a 400
+        # response, not a server bug. WARN without traceback.
+        verbose_proxy_logger.warning("Invalid JSON payload received: %s", str(e))
         raise
     except Exception as e:
-        # Catch unexpected errors to avoid crashes
+        # Catch unexpected errors to avoid crashes. THIS is a real server
+        # fault path (we expected json/orjson to be the only decoders and
+        # something else blew up) — keep ERROR + traceback.
         verbose_proxy_logger.exception(
             "Unexpected error reading request body - {}".format(e)
         )

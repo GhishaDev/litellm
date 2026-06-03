@@ -288,6 +288,7 @@ from litellm.proxy.common_utils.encrypt_decrypt_utils import (
     decrypt_value_helper,
     encrypt_value_helper,
 )
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.common_utils.html_forms.ui_login import build_ui_login_form
 from litellm.proxy.common_utils.http_parsing_utils import (
     _read_request_body,
@@ -6706,11 +6707,7 @@ async def async_assistants_data_generator(
         done_message = "[DONE]"
         yield f"data: {done_message}\n\n"
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.async_assistants_data_generator(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/v1/assistants[stream]", e)
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict,
             original_exception=e,
@@ -7033,11 +7030,7 @@ async def async_data_generator(  # noqa: PLR0915
         done_message = "[DONE]"
         yield f"data: {done_message}\n\n"
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.async_data_generator(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/v1/chat/completions[stream]", e)
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict,
             original_exception=e,
@@ -8740,11 +8733,7 @@ async def completion(  # noqa: PLR0915
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.completion(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/v1/completions", e)
         error_msg = f"{str(e)}"
         raise ProxyException(
             message=getattr(e, "message", error_msg),
@@ -9006,11 +8995,7 @@ async def moderations(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.moderations(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/v1/moderations", e)
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "message", str(e)),
@@ -9298,11 +9283,7 @@ async def audio_transcriptions(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.audio_transcription(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/v1/audio/transcriptions", e)
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "message", str(e.detail)),
@@ -9461,7 +9442,7 @@ async def realtime_websocket_endpoint(
             route_type="_arealtime",
         )
     except Exception as e:
-        verbose_proxy_logger.exception("Realtime pre-call error")
+        log_proxy_exception(verbose_proxy_logger, "/realtime[pre-call]", e)
         try:
             await websocket.send_text(
                 json.dumps(
@@ -9490,10 +9471,10 @@ async def realtime_websocket_endpoint(
         )
         await llm_call
     except websockets.exceptions.InvalidStatusCode as e:  # type: ignore
-        verbose_proxy_logger.exception("Invalid status code")
+        log_proxy_exception(verbose_proxy_logger, "/realtime[upstream-status]", e)
         await websocket.close(code=e.status_code, reason="Invalid status code")
-    except Exception:
-        verbose_proxy_logger.exception("Internal server error")
+    except Exception as e:
+        log_proxy_exception(verbose_proxy_logger, "/realtime", e)
         await websocket.close(code=1011, reason="Internal server error")
 
 
@@ -10456,9 +10437,9 @@ async def token_counter(request: TokenCountRequest, call_endpoint: bool = False)
                 model=request.model,
                 request_kwargs={},
             )
-        except Exception:
-            verbose_proxy_logger.exception(
-                "litellm.proxy.proxy_server.token_counter(): Exception occured while getting deployment"
+        except Exception as e:
+            log_proxy_exception(
+                verbose_proxy_logger, "/utils/token_counter[get-deployment]", e
             )
             pass
     if deployment is not None:
@@ -13084,11 +13065,7 @@ async def login_v2(request: Request):  # noqa: PLR0915
         json_response.set_cookie(key="token", value=jwt_token)
         return json_response
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.login_v2(): Exception occurred - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/login_v2", e)
         if isinstance(e, ProxyException):
             raise e
         elif isinstance(e, HTTPException):
@@ -13175,11 +13152,7 @@ async def login_v3(request: Request):  # noqa: PLR0915
             status_code=status.HTTP_200_OK,
         )
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.login_v3(): Exception occurred - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/login_v3", e)
         if isinstance(e, ProxyException):
             raise e
         elif isinstance(e, HTTPException):
@@ -13254,11 +13227,7 @@ async def login_v3_exchange(request: Request):
     except ProxyException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.login_v3_exchange(): Exception occurred - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/login_v3/exchange", e)
         raise ProxyException(
             message=str(e),
             type=ProxyErrorTypes.auth_error,
@@ -14917,7 +14886,7 @@ async def reload_model_cost_map(
             "timestamp": current_time.isoformat(),
         }
     except Exception as e:
-        verbose_proxy_logger.exception(f"Failed to reload model cost map: {str(e)}")
+        log_proxy_exception(verbose_proxy_logger, "/reload/model_cost_map", e)
         raise HTTPException(
             status_code=500, detail=f"Failed to reload model cost map: {str(e)}"
         )
@@ -14986,9 +14955,7 @@ async def schedule_model_cost_map_reload(
             "timestamp": datetime.utcnow().isoformat(),
         }
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Failed to schedule model cost map reload: {str(e)}"
-        )
+        log_proxy_exception(verbose_proxy_logger, "/schedule/model_cost_map_reload", e)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to schedule model cost map reload: {str(e)}",
@@ -15037,8 +15004,8 @@ async def cancel_model_cost_map_reload(
             "timestamp": datetime.utcnow().isoformat(),
         }
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Failed to cancel model cost map reload: {str(e)}"
+        log_proxy_exception(
+            verbose_proxy_logger, "/schedule/model_cost_map_reload[cancel]", e
         )
         raise HTTPException(
             status_code=500, detail=f"Failed to cancel model cost map reload: {str(e)}"
@@ -15132,8 +15099,8 @@ async def get_model_cost_map_reload_status(
             "next_run": next_run,
         }
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Failed to get model cost map reload status: {str(e)}"
+        log_proxy_exception(
+            verbose_proxy_logger, "/schedule/model_cost_map_reload/status", e
         )
         raise HTTPException(
             status_code=500,
@@ -15182,9 +15149,7 @@ async def get_model_cost_map_source(
             "model_count": model_count,
         }
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Failed to get model cost map source info: {str(e)}"
-        )
+        log_proxy_exception(verbose_proxy_logger, "/get/model_cost_map_source", e)
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get model cost map source info: {str(e)}",
@@ -15275,9 +15240,7 @@ async def reload_anthropic_beta_headers(
             "timestamp": current_time.isoformat(),
         }
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Failed to reload anthropic beta headers: {str(e)}"
-        )
+        log_proxy_exception(verbose_proxy_logger, "/reload/anthropic_beta_headers", e)
         raise HTTPException(
             status_code=500, detail=f"Failed to reload anthropic beta headers: {str(e)}"
         )
@@ -15346,8 +15309,8 @@ async def schedule_anthropic_beta_headers_reload(
             "timestamp": datetime.utcnow().isoformat(),
         }
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Failed to schedule anthropic beta headers reload: {str(e)}"
+        log_proxy_exception(
+            verbose_proxy_logger, "/schedule/anthropic_beta_headers_reload", e
         )
         raise HTTPException(
             status_code=500,
@@ -15397,8 +15360,8 @@ async def cancel_anthropic_beta_headers_reload(
             "timestamp": datetime.utcnow().isoformat(),
         }
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Failed to cancel anthropic beta headers reload: {str(e)}"
+        log_proxy_exception(
+            verbose_proxy_logger, "/schedule/anthropic_beta_headers_reload[cancel]", e
         )
         raise HTTPException(
             status_code=500,
@@ -15497,8 +15460,8 @@ async def get_anthropic_beta_headers_reload_status(
             "next_run": next_run,
         }
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Failed to get anthropic beta headers reload status: {str(e)}"
+        log_proxy_exception(
+            verbose_proxy_logger, "/schedule/anthropic_beta_headers_reload/status", e
         )
         raise HTTPException(
             status_code=500,
