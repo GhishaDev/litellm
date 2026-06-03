@@ -61,6 +61,7 @@ from litellm.proxy._types import (
     UserAPIKeyAuth,
 )
 from litellm.proxy.auth.route_checks import RouteChecks
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
 from litellm.proxy.guardrails.tool_name_extraction import (
     TOOL_CAPABLE_CALL_TYPES,
@@ -1212,11 +1213,12 @@ async def get_team_membership(
         _response = LiteLLM_TeamMembership(**response.dict())
 
         return _response
-    except Exception:
-        verbose_proxy_logger.exception(
-            "Error getting team membership for user_id: %s, team_id: %s",
-            user_id,
-            team_id,
+    except Exception as e:
+        log_proxy_exception(
+            verbose_proxy_logger,
+            "get_team_membership",
+            e,
+            extra={"user_id": user_id, "team_id": team_id},
         )
         return None
 
@@ -1830,9 +1832,11 @@ async def get_access_object(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "Error getting access group for access_group_id: %s",
-            access_group_id,
+        log_proxy_exception(
+            verbose_proxy_logger,
+            "access_group_lookup",
+            e,
+            extra={"access_group_id": access_group_id},
         )
         raise HTTPException(
             status_code=404,
@@ -1943,7 +1947,12 @@ async def get_team_object_by_alias(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception("Error looking up team by alias: %s", team_alias)
+        log_proxy_exception(
+            verbose_proxy_logger,
+            "team_alias_lookup",
+            e,
+            extra={"team_alias": team_alias},
+        )
         raise HTTPException(
             status_code=500,
             detail={
@@ -2033,8 +2042,11 @@ async def get_org_object_by_alias(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "Error looking up organization by alias: %s", org_alias
+        log_proxy_exception(
+            verbose_proxy_logger,
+            "organization_alias_lookup",
+            e,
+            extra={"org_alias": org_alias},
         )
         raise HTTPException(
             status_code=500,
@@ -3126,9 +3138,7 @@ async def _virtual_key_max_budget_alert_check(
         alert_email_config: Optional[Dict[str, List[str]]] = (
             _merge_budget_alert_email_configs(
                 global_cfg=litellm.default_key_max_budget_alert_emails,
-                per_key_cfg=(valid_token.metadata or {}).get(
-                    "max_budget_alert_emails"
-                ),
+                per_key_cfg=(valid_token.metadata or {}).get("max_budget_alert_emails"),
             )
         )
 
@@ -3138,7 +3148,9 @@ async def _virtual_key_max_budget_alert_check(
                 (int(k) for k in alert_email_config if k.isdigit()),
                 default=None,
             )
-            if min_pct is None or valid_token.spend < valid_token.max_budget * (min_pct / 100.0):
+            if min_pct is None or valid_token.spend < valid_token.max_budget * (
+                min_pct / 100.0
+            ):
                 return
 
             call_info = CallInfo(
@@ -3164,8 +3176,7 @@ async def _virtual_key_max_budget_alert_check(
         else:
             # Old path: existing single 80% threshold — completely unchanged
             alert_threshold = (
-                valid_token.max_budget
-                * EMAIL_BUDGET_ALERT_MAX_SPEND_ALERT_PERCENTAGE
+                valid_token.max_budget * EMAIL_BUDGET_ALERT_MAX_SPEND_ALERT_PERCENTAGE
             )
 
             if (
