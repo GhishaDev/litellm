@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import CommonProxyErrors, UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.types.tool_management import (
     LiteLLM_ToolTableRow,
     ToolDetailResponse,
@@ -115,7 +116,7 @@ async def list_tools(
         )
         return ToolListResponse(tools=tools, total=len(tools))
     except Exception as e:
-        verbose_proxy_logger.exception("Error listing tools: %s", e)
+        log_proxy_exception(verbose_proxy_logger, "/tool/list", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -152,7 +153,7 @@ async def get_tool_detail(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception("Error getting tool detail: %s", e)
+        log_proxy_exception(verbose_proxy_logger, "/tool/detail", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -301,7 +302,7 @@ async def get_tool_usage_logs(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception("Error getting tool usage logs: %s", e)
+        log_proxy_exception(verbose_proxy_logger, "/tool/usage_logs", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -334,7 +335,7 @@ async def get_tool(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception("Error getting tool: %s", e)
+        log_proxy_exception(verbose_proxy_logger, "/tool/get", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -527,7 +528,7 @@ async def update_tool_policy(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception("Error updating tool policy: %s", e)
+        log_proxy_exception(verbose_proxy_logger, "/tool/policy/update", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -601,5 +602,5 @@ async def delete_tool_policy_override(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception("Error deleting tool policy override: %s", e)
+        log_proxy_exception(verbose_proxy_logger, "/tool/policy/delete", e)
         raise HTTPException(status_code=500, detail=str(e))

@@ -21,6 +21,7 @@ from litellm._uuid import uuid
 from litellm.proxy._types import *
 from litellm.proxy.auth.auth_checks import can_user_call_model, get_user_object
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.management_endpoints.budget_management_endpoints import (
     new_budget,
     update_budget,
@@ -951,7 +952,7 @@ async def organization_member_add(
             updated_organization_memberships=updated_organization_memberships,
         )
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error adding member to organization: {e}")
+        log_proxy_exception(verbose_proxy_logger, "/organization/member_add", e)
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
@@ -1078,10 +1079,7 @@ async def organization_member_update(
             LitellmUserRoles.PROXY_ADMIN.value,
             LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
         ):
-            if (
-                user_api_key_dict.user_role
-                != LitellmUserRoles.PROXY_ADMIN.value
-            ):
+            if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:
                 raise HTTPException(
                     status_code=403,
                     detail={
@@ -1157,7 +1155,7 @@ async def organization_member_update(
         )
         return final_organization_membership_pydantic
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error updating member in organization: {e}")
+        log_proxy_exception(verbose_proxy_logger, "/organization/member_update", e)
         raise e
 
 
@@ -1199,7 +1197,7 @@ async def organization_member_delete(
         return member_to_delete
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error deleting member from organization: {e}")
+        log_proxy_exception(verbose_proxy_logger, "/organization/member_delete", e)
         raise e
 
 

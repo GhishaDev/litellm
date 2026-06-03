@@ -52,6 +52,7 @@ from litellm.proxy._experimental.mcp_server.utils import (
 from litellm.proxy._experimental.mcp_server.utils import (
     validate_and_normalize_mcp_server_payload as _base_validate_and_normalize_mcp_server_payload,
 )
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 
 router = APIRouter(prefix="/v1/mcp", tags=["mcp"])
 
@@ -932,7 +933,7 @@ if MCP_AVAILABLE:
                 touched_by=user_api_key_dict.user_id or user_api_key_dict.team_id,
             )
         except Exception as e:
-            verbose_proxy_logger.exception(f"Error registering mcp server: {str(e)}")
+            log_proxy_exception(verbose_proxy_logger, "/v1/mcp/server/submit", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={"error": f"Error registering mcp server: {str(e)}"},
@@ -1266,7 +1267,7 @@ if MCP_AVAILABLE:
             # Ensure registry is up to date by reloading from database
             await global_mcp_server_manager.reload_servers_from_database()
         except Exception as e:
-            verbose_proxy_logger.exception(f"Error creating mcp server: {str(e)}")
+            log_proxy_exception(verbose_proxy_logger, "/v1/mcp/server", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={"error": f"Error creating mcp server: {str(e)}"},
@@ -1326,9 +1327,7 @@ if MCP_AVAILABLE:
                 ttl_seconds=TEMPORARY_MCP_SERVER_TTL_SECONDS,
             )
         except Exception as e:
-            verbose_proxy_logger.exception(
-                f"Error caching temporary mcp server: {str(e)}"
-            )
+            log_proxy_exception(verbose_proxy_logger, "/v1/mcp/server/oauth/session", e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={"error": f"Error caching temporary mcp server: {str(e)}"},
@@ -1920,7 +1919,7 @@ if MCP_AVAILABLE:
         except HTTPException:
             raise
         except Exception as e:
-            verbose_proxy_logger.exception(f"Error making agent public: {e}")
+            log_proxy_exception(verbose_proxy_logger, "/v1/mcp/agent/make_public", e)
             raise HTTPException(status_code=500, detail=str(e))
 
     # --- MCP Discovery ---

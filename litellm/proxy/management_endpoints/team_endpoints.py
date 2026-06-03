@@ -69,6 +69,7 @@ from litellm.proxy.auth.auth_checks import (
     get_user_object,
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.management_endpoints.common_utils import (
     _is_user_org_admin_for_team,
     _is_user_team_admin,
@@ -1570,8 +1571,7 @@ async def update_team(  # noqa: PLR0915
             current_org_id = getattr(existing_team_row, "organization_id", None)
             if (
                 data.organization_id != current_org_id
-                and user_api_key_dict.user_role
-                != LitellmUserRoles.PROXY_ADMIN.value
+                and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value
             ):
                 # Is the caller org_admin of the destination org?
                 caller_memberships = (
@@ -2822,7 +2822,7 @@ async def bulk_team_member_add(
 
     except Exception as e:
         # If the entire operation fails, mark all members as failed
-        verbose_proxy_logger.exception(e)
+        log_proxy_exception(verbose_proxy_logger, "/team/member_add[bulk]", e)
         error_message = str(e)
         results = [
             TeamMemberAddResult(
@@ -4055,7 +4055,12 @@ async def list_team(
             """.format(
                 team.team_id, team.model_dump(), str(e)
             )
-            verbose_proxy_logger.exception(team_exception)
+            log_proxy_exception(
+                verbose_proxy_logger,
+                "/team/list[per-team]",
+                e,
+                extra={"team_id": team.team_id, "context": team_exception},
+            )
             continue
     # Sort the responses by team_alias
     returned_responses.sort(key=lambda x: (getattr(x, "team_alias", "") or ""))
@@ -4103,9 +4108,7 @@ async def get_paginated_teams(
         )
         return teams, total_count
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"[Non-Blocking] Error getting paginated teams: {e}"
-        )
+        log_proxy_exception(verbose_proxy_logger, "get_paginated_teams", e)
         return [], 0
 
 

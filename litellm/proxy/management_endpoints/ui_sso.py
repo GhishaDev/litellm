@@ -77,6 +77,7 @@ from litellm.proxy.common_utils.admin_ui_utils import (
     admin_ui_disabled,
     show_missing_vars_in_env,
 )
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.common_utils.html_forms.jwt_display_template import (
     jwt_display_template,
 )
@@ -811,10 +812,11 @@ def _handle_generic_sso_error(
             additional_headers,
         )
     else:
-        verbose_proxy_logger.exception(
-            "Error verifying and processing generic SSO: %s. Passed in headers: %s",
+        log_proxy_exception(
+            verbose_proxy_logger,
+            "generic_sso_verify",
             e,
-            additional_headers,
+            extra={"additional_headers": additional_headers},
         )
     raise e
 
@@ -1132,9 +1134,7 @@ async def get_user_info_from_db(
 
         return user_info
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"[Non-Blocking] Error trying to add sso user to db: {e}"
-        )
+        log_proxy_exception(verbose_proxy_logger, "sso_add_user_to_db", e)
 
     return None
 
@@ -2234,9 +2234,7 @@ class SSOAuthenticationHandler:
                 )
             return user_info
         except Exception as e:
-            verbose_proxy_logger.exception(
-                f"Error upserting SSO user into LiteLLM DB: {e}"
-            )
+            log_proxy_exception(verbose_proxy_logger, "sso_upsert_user", e)
             return user_info
 
     @staticmethod
@@ -2356,7 +2354,7 @@ class SSOAuthenticationHandler:
                 ),
             )
         except Exception as e:
-            verbose_proxy_logger.exception(f"Error creating Litellm Team: {e}")
+            log_proxy_exception(verbose_proxy_logger, "sso_create_team", e)
 
     @staticmethod
     def _cast_and_deepcopy_litellm_default_team_params(
