@@ -45,7 +45,7 @@ const registerGuardrail = async (
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     const errorMessage = deriveErrorMessage(errorData);
-    handleError(errorMessage);
+    handleError(errorData);
     throw new Error(errorMessage);
   }
 

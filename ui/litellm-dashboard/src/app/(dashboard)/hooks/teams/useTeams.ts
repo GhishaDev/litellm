@@ -78,7 +78,7 @@ export const teamListCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorMessage);
+      handleError(errorData);
       throw new Error(errorMessage);
     }
 
@@ -205,7 +205,7 @@ const deletedTeamListCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorMessage);
+      handleError(errorData);
       throw new Error(errorMessage);
     }
 
