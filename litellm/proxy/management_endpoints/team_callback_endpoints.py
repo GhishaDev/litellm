@@ -28,6 +28,7 @@ from litellm.proxy._types import (
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_utils.callback_utils import encrypt_callback_vars
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.management_endpoints.team_endpoints import _verify_team_access
 from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
 
@@ -271,11 +272,7 @@ async def add_team_callbacks(
     except ProxyException as e:
         raise e
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.add_team_callbacks(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/team/{team_id}/callback", e)
         raise ProxyException(
             message="Internal Server Error, " + str(e),
             type=ProxyErrorTypes.internal_server_error.value,

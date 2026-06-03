@@ -5794,11 +5794,18 @@ def _get_openapi_url() -> Optional[str]:
 
 def handle_exception_on_proxy(e: Exception) -> ProxyException:
     """
-    Returns an Exception as ProxyException, this ensures all exceptions are OpenAI API compatible
+    Returns an Exception as ProxyException, this ensures all exceptions are OpenAI API compatible.
+
+    Callers are expected to have logged this exception via
+    ``log_proxy_exception`` already (which classifies 4xx / upstream 5xx
+    as WARN without a traceback). Emit only a DEBUG line here so the
+    ERROR stream stays signal — calling ``.exception()`` unconditionally
+    re-emitted every routine 401/404/409 with a full traceback, which is
+    exactly what the WARN routing in the endpoints was meant to silence.
     """
     from fastapi import status
 
-    verbose_proxy_logger.exception(f"Exception: {e}")
+    verbose_proxy_logger.debug("handle_exception_on_proxy: %s", e)
 
     if isinstance(e, HTTPException):
         return ProxyException(

@@ -55,6 +55,7 @@ from litellm.proxy.common_utils.callback_utils import (
     decrypt_callback_vars,
     encrypt_callback_vars,
 )
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.common_utils.rbac_utils import check_org_admin_can_generate_keys
 from litellm.proxy.common_utils.timezone_utils import get_budget_reset_time
 from litellm.proxy.hooks.key_management_event_hooks import KeyManagementEventHooks
@@ -1543,11 +1544,7 @@ async def generate_key_fn(
         )
 
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.generate_key_fn(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/key/generate", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -1750,11 +1747,7 @@ def prepare_metadata_fields(
                 casted_metadata[k] = v
 
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.prepare_metadata_fields(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "prepare_metadata_fields", e)
 
     non_default_values["metadata"] = encrypt_callback_vars(casted_metadata)
     return non_default_values
@@ -2546,11 +2539,7 @@ async def update_key_fn(  # noqa: PLR0915
         return {"key": key, **response["data"]}
         # update based on remaining passed in values
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.update_key_fn(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/key/update", e)
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
@@ -2690,8 +2679,11 @@ async def bulk_update_keys(
             )
 
         except Exception as e:
-            verbose_proxy_logger.exception(
-                f"Failed to update key {key_update_item.key}: {e}"
+            log_proxy_exception(
+                verbose_proxy_logger,
+                "/key/bulk_update[per-key]",
+                e,
+                extra={"key": key_update_item.key},
             )
 
             if isinstance(e, HTTPException):
@@ -3136,11 +3128,7 @@ async def delete_key_fn(
 
         return {"deleted_keys": deleted_keys}
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.delete_key_fn(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/key/delete", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -3860,11 +3848,7 @@ async def delete_verification_tokens(
         else:
             raise Exception("DB not connected. prisma_client is None")
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.delete_verification_tokens(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "delete_verification_tokens", e)
         verbose_proxy_logger.debug(traceback.format_exc())
         raise e
 
@@ -4535,7 +4519,7 @@ async def regenerate_key_fn(  # noqa: PLR0915
             proxy_logging_obj=proxy_logging_obj,
         )
     except Exception as e:
-        verbose_proxy_logger.exception("Error regenerating key: %s", e)
+        log_proxy_exception(verbose_proxy_logger, "/key/regenerate", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -4694,7 +4678,7 @@ async def reset_key_spend_fn(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception("Error resetting key spend: %s", e)
+        log_proxy_exception(verbose_proxy_logger, "/key/reset_spend", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -5049,7 +5033,7 @@ async def list_keys(
         return response
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error in list_keys: {e}")
+        log_proxy_exception(verbose_proxy_logger, "/key/list", e)
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"error({str(e)})"),
@@ -5213,7 +5197,7 @@ async def key_aliases(
         }
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error in key_aliases: {e}")
+        log_proxy_exception(verbose_proxy_logger, "/key/aliases", e)
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"error({str(e)})"),

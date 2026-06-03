@@ -26,6 +26,7 @@ from litellm.proxy._types import (
     UserAPIKeyAuth,
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.types.management_endpoints import (
     CACHE_SETTINGS_FIELDS,
     REDIS_TYPE_DESCRIPTIONS,
@@ -199,11 +200,7 @@ class CacheSettingsManager:
 
                 verbose_proxy_logger.info("Cache settings initialized from database")
         except Exception as e:
-            verbose_proxy_logger.exception(
-                "litellm.proxy.management_endpoints.cache_settings_endpoints.py::CacheSettingsManager::init_cache_settings_in_db - {}".format(
-                    str(e)
-                )
-            )
+            log_proxy_exception(verbose_proxy_logger, "init_cache_settings_in_db", e)
 
     @staticmethod
     def update_cache_params(cache_params: Dict[str, Any]):

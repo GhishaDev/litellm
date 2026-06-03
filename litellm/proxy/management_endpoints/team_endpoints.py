@@ -73,6 +73,7 @@ from litellm.proxy.auth.auth_checks import (
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_utils.callback_utils import encrypt_callback_vars
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.management_endpoints.common_utils import (
     _check_passthrough_routes_caller_permission,
     _is_user_org_admin_for_team,
@@ -3023,7 +3024,7 @@ async def bulk_team_member_add(
 
     except Exception as e:
         # If the entire operation fails, mark all members as failed
-        verbose_proxy_logger.exception(e)
+        log_proxy_exception(verbose_proxy_logger, "/team/member_add[bulk]", e)
         error_message = str(e)
         results = [
             TeamMemberAddResult(
@@ -4391,7 +4392,12 @@ async def list_team(
             team_exception = """Invalid team object for team_id: {}. team_object={}.
             Error: {}
             """.format(team.team_id, team.model_dump(), str(e))
-            verbose_proxy_logger.exception(team_exception)
+            log_proxy_exception(
+                verbose_proxy_logger,
+                "/team/list[per-team]",
+                e,
+                extra={"team_id": team.team_id, "context": team_exception},
+            )
             continue
     # Sort the responses by team_alias
     returned_responses.sort(key=lambda x: (getattr(x, "team_alias", "") or ""))
@@ -4439,9 +4445,7 @@ async def get_paginated_teams(
         )
         return teams, total_count
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"[Non-Blocking] Error getting paginated teams: {e}"
-        )
+        log_proxy_exception(verbose_proxy_logger, "get_paginated_teams", e)
         return [], 0
 
 

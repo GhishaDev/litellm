@@ -266,6 +266,80 @@ async def test_unknown_exception_logs_at_error_with_traceback(caplog):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Bare Exception raised from litellm/proxy/auth/user_api_key_auth.py:944
+        # when the request has no Authorization header. Before the
+        # classifier-aware _is_known check, this surfaced as
+        # ERROR + traceback on every unauthenticated probe — the
+        # exact noise that motivated this work.
+        "No api key passed in.",
+        # Same shape, different raise site (Malformed key, virtual-key prefix).
+        "Malformed API Key passed in. Ensure Key has `Bearer` prefix.",
+        "LiteLLM Virtual Key expected. Received=foo, expected to start with 'sk-'",
+    ],
+)
+async def test_bare_exception_with_known_auth_marker_logs_at_warning(
+    message: str, caplog
+):
+    """
+    Regression: ``user_api_key_auth`` raises bare ``Exception(...)``
+    objects for missing/malformed credentials. These are normal 401
+    outcomes from probes and fat-fingered keys — they must log at
+    WARN without a traceback, even though the exception's *type* is
+    not in ``_KNOWN_AUTH_ERROR_TYPES``. The classifier identifies
+    them by message content; the WARN routing must trust that
+    classification.
+
+    Discovered in e2e: a stream of unauthenticated requests was
+    flooding the ERROR log with ``Exception: No api key passed in.``
+    tracebacks because ``isinstance(e, _KNOWN_AUTH_ERROR_TYPES)``
+    alone missed bare Exceptions.
+    """
+    import logging
+
+    handler = UserAPIKeyAuthExceptionHandler()
+
+    mock_request = MagicMock()
+    mock_request.headers = {}
+    mock_request_data: dict = {}
+    test_route = "/v1/chat/completions"
+
+    with (
+        patch(
+            "litellm.proxy.proxy_server.general_settings",
+            {"allow_requests_on_db_unavailable": False},
+        ),
+        patch(
+            "litellm.proxy.proxy_server.proxy_logging_obj.post_call_failure_hook",
+            new_callable=AsyncMock,
+        ),
+    ):
+        caplog.set_level(logging.WARNING, logger=verbose_proxy_logger.name)
+        try:
+            await handler._handle_authentication_error(
+                Exception(message),
+                mock_request,
+                mock_request_data,
+                test_route,
+                None,
+                "test-key",
+            )
+        except Exception:
+            pass
+
+    auth_records = [
+        r for r in caplog.records if "user_api_key_auth failed" in r.getMessage()
+    ]
+    assert len(auth_records) == 1
+    record = auth_records[0]
+    assert record.levelno == logging.WARNING
+    # No traceback — that's the whole point of routing this to WARN.
+    assert not record.exc_info
+
+
+@pytest.mark.asyncio
 async def test_empty_exception_message_falls_back_to_type_name(caplog):
     """
     ProxyException sometimes carries an empty `message` field; without the
