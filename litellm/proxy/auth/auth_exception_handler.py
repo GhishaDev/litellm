@@ -194,7 +194,19 @@ class UserAPIKeyAuthExceptionHandler:
             # budget exceeded) are normal 401/403 outcomes — log them at
             # WARN without a traceback so the error stream stays signal.
             # Truly unexpected exceptions still go to ERROR with a stack.
-            _is_known = isinstance(e, _KNOWN_AUTH_ERROR_TYPES)
+            #
+            # Two-tier check: the wire-format types (ProxyException /
+            # HTTPException) are always known. Bare ``Exception`` is the
+            # tricky case — the auth pipeline raises a lot of these
+            # ("No api key passed in.", "Malformed API Key passed in. ...",
+            # "LiteLLM Virtual Key expected. ..."). Run the same
+            # text classifier we use for the wire `type` field; if it
+            # confidently routes to a specific auth_* type, treat the
+            # exception as known and drop the traceback. Only the catch-all
+            # `auth_error` outcome (genuinely ambiguous) keeps ERROR+stack.
+            _is_known = isinstance(e, _KNOWN_AUTH_ERROR_TYPES) or (
+                _classify_auth_failure(e) != ProxyErrorTypes.auth_error
+            )
             _log_level = logging.WARNING if _is_known else logging.ERROR
 
             # `str(e)` is sometimes empty for ProxyException, which historically

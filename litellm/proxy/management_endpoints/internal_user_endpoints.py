@@ -27,6 +27,7 @@ from litellm._uuid import uuid
 from litellm.proxy._types import *
 from litellm.proxy.auth.auth_checks import get_team_object, get_user_object
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.hooks.user_management_event_hooks import UserManagementEventHooks
 from litellm.proxy.management_endpoints.common_daily_activity import (
     get_daily_activity,
@@ -522,9 +523,7 @@ async def new_user(
 
         return new_user_response
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "/user/new: Exception occured - {}".format(str(e))
-        )
+        log_proxy_exception(verbose_proxy_logger, "/user/new", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -782,11 +781,7 @@ async def user_info(  # noqa: PLR0915
 
         return response_data
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.user_info(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/user/info", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -942,11 +937,7 @@ async def user_info_v2(
             teams=user_data.get("teams") or [],
         )
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.user_info_v2(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/user/info_v2", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -1376,11 +1367,7 @@ async def user_update(
         )
         return response
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.user_update(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/user/update", e)
         verbose_proxy_logger.debug(traceback.format_exc())
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -1432,14 +1419,17 @@ async def bulk_update_processed_users(
                 )
                 successful_updates += 1
             except Exception as e:
-                verbose_proxy_logger.exception(
-                    f"Failed to update user {user_request.user_id or user_request.user_email}: {e}"
+                log_proxy_exception(
+                    verbose_proxy_logger,
+                    "/user/bulk_update[per-user]",
+                    e,
+                    extra={
+                        "user_id": user_request.user_id,
+                        "user_email": user_request.user_email,
+                    },
                 )
                 # Record failure
                 error_message = str(e)
-                verbose_proxy_logger.error(
-                    f"Failed to update user {user_request.user_id or user_request.user_email}: {error_message}"
-                )
 
                 results.append(
                     UserUpdateResult(
@@ -1458,7 +1448,7 @@ async def bulk_update_processed_users(
             failed_updates=failed_updates,
         )
     except Exception as e:
-        verbose_proxy_logger.exception(f"Failed to update users: {e}")
+        log_proxy_exception(verbose_proxy_logger, "/user/bulk_update", e)
         raise HTTPException(status_code=500, detail={"error": str(e)})
 
 
@@ -1639,7 +1629,7 @@ async def bulk_user_update(
                 )
 
         except Exception as e:
-            verbose_proxy_logger.exception(f"Failed to perform bulk update: {e}")
+            log_proxy_exception(verbose_proxy_logger, "/user/bulk_update[batch]", e)
             # Fall back to individual updates if bulk update fails
             for user in all_users_in_db:
                 user_update_request = data.user_updates.model_copy()
@@ -2120,9 +2110,7 @@ async def delete_user(
         for m in all_target_memberships:
             if not m.organization_id:
                 continue
-            target_org_ids_by_user.setdefault(m.user_id, set()).add(
-                m.organization_id
-            )
+            target_org_ids_by_user.setdefault(m.user_id, set()).add(m.organization_id)
 
     # check that all teams passed exist
     for user_id in data.user_ids:
@@ -2141,9 +2129,7 @@ async def delete_user(
             # Org-admin may only delete users whose entire org membership is
             # within their admin scope. A target with ANY org outside the
             # caller's scope (or no org at all) requires PROXY_ADMIN.
-            if not target_org_ids or not target_org_ids.issubset(
-                caller_admin_org_ids
-            ):
+            if not target_org_ids or not target_org_ids.issubset(caller_admin_org_ids):
                 raise HTTPException(
                     status_code=403,
                     detail={
@@ -2502,7 +2488,7 @@ async def ui_view_users(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error searching users: {str(e)}")
+        log_proxy_exception(verbose_proxy_logger, "/user/filter/ui", e)
         raise HTTPException(status_code=500, detail=f"Error searching users: {str(e)}")
 
 
@@ -2615,9 +2601,7 @@ async def get_user_daily_activity(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "/spend/daily/analytics: Exception occured - {}".format(str(e))
-        )
+        log_proxy_exception(verbose_proxy_logger, "/spend/daily/analytics", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to fetch analytics: {str(e)}"},
@@ -2710,9 +2694,7 @@ async def get_user_daily_activity_aggregated(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "/user/daily/activity/aggregated: Exception occured - {}".format(str(e))
-        )
+        log_proxy_exception(verbose_proxy_logger, "/user/daily/activity/aggregated", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to fetch analytics: {str(e)}"},

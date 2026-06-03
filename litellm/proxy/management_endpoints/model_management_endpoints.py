@@ -37,6 +37,7 @@ from litellm.proxy._types import (
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_utils.encrypt_decrypt_utils import encrypt_value_helper
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.management_endpoints.common_utils import _is_user_team_admin
 from litellm.proxy.management_endpoints.team_endpoints import (
     team_model_add,
@@ -270,7 +271,7 @@ async def patch_model(
         return updated_model
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error in patch_model: {str(e)}")
+        log_proxy_exception(verbose_proxy_logger, "/model/{model_id}/update", e)
 
         if isinstance(e, (HTTPException, ProxyException)):
             raise e
@@ -852,9 +853,7 @@ async def delete_model(
             )
 
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Failed to delete model. Due to error - {str(e)}"
-        )
+        log_proxy_exception(verbose_proxy_logger, "/model/delete", e)
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
@@ -1017,7 +1016,7 @@ async def add_new_model(
                         passed_model_info=model_params.model_info,
                     )
             except Exception as e:
-                verbose_proxy_logger.exception(f"Exception in add_new_model: {e}")
+                log_proxy_exception(verbose_proxy_logger, "/model/new[inner]", e)
 
         else:
             raise HTTPException(
@@ -1056,11 +1055,7 @@ async def add_new_model(
         return model_response
 
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.add_new_model(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/model/new", e)
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
@@ -1214,11 +1209,7 @@ async def update_model(
 
             return model_response
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.update_model(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/model/update", e)
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
@@ -1315,7 +1306,7 @@ async def update_public_model_groups(
         }
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error updating public model groups: {str(e)}")
+        log_proxy_exception(verbose_proxy_logger, "/model_group/make_public", e)
 
         if isinstance(e, HTTPException):
             raise e
@@ -1385,7 +1376,7 @@ async def update_useful_links(
         }
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error updating public model groups: {str(e)}")
+        log_proxy_exception(verbose_proxy_logger, "/model_hub/update_useful_links", e)
 
         if isinstance(e, HTTPException):
             raise e
@@ -1471,6 +1462,4 @@ async def clear_cache():
             f"Cleared {len(db_model_ids)} DB models, preserved {len(config_models)} config models"
         )
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Failed to clear cache and reload models. Due to error - {str(e)}"
-        )
+        log_proxy_exception(verbose_proxy_logger, "clear_cache_and_reload_models", e)

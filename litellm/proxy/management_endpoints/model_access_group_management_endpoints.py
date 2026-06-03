@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 
 # Clear cache and reload models to pick up the access group changes
 from litellm.proxy.management_endpoints.model_management_endpoints import (
@@ -383,8 +384,11 @@ async def create_model_group(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Error creating access group '{data.access_group}': {str(e)}"
+        log_proxy_exception(
+            verbose_proxy_logger,
+            "/access_group/new",
+            e,
+            extra={"access_group": data.access_group},
         )
         raise HTTPException(
             status_code=500,
@@ -437,7 +441,7 @@ async def list_access_groups(
         return ListAccessGroupsResponse(access_groups=access_groups_list)
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error listing access groups: {str(e)}")
+        log_proxy_exception(verbose_proxy_logger, "/access_group/list", e)
         raise HTTPException(
             status_code=500,
             detail={"error": f"Failed to list access groups: {str(e)}"},
@@ -496,8 +500,11 @@ async def get_access_group_info(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Error getting access group info for '{access_group}': {str(e)}"
+        log_proxy_exception(
+            verbose_proxy_logger,
+            "/access_group/{access_group}/info",
+            e,
+            extra={"access_group": access_group},
         )
         raise HTTPException(
             status_code=500,
@@ -653,8 +660,11 @@ async def update_access_group(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Error updating access group '{access_group}': {str(e)}"
+        log_proxy_exception(
+            verbose_proxy_logger,
+            "/access_group/update",
+            e,
+            extra={"access_group": access_group},
         )
         raise HTTPException(
             status_code=500,
@@ -756,8 +766,11 @@ async def delete_access_group(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Error deleting access group '{access_group}': {str(e)}"
+        log_proxy_exception(
+            verbose_proxy_logger,
+            "/access_group/delete",
+            e,
+            extra={"access_group": access_group},
         )
         raise HTTPException(
             status_code=500,

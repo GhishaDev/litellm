@@ -17,6 +17,7 @@ from litellm.proxy.auth.auth_checks import (
     _get_team_object_from_cache,
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
 from litellm.proxy.utils import get_prisma_client_or_throw
 from litellm.types.access_group import (
@@ -623,10 +624,11 @@ async def delete_access_group(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "delete_access_group failed: access_group_id=%s error=%s",
-            access_group_id,
+        log_proxy_exception(
+            verbose_proxy_logger,
+            "/access_group/delete",
             e,
+            extra={"access_group_id": access_group_id},
         )
         if PrismaDBExceptionHandler.is_database_connection_error(e):
             raise HTTPException(
