@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 
 import litellm
 from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 
 if TYPE_CHECKING:
     from litellm.router import Router as _Router
@@ -189,9 +190,9 @@ async def add_shared_session_to_data(data: dict) -> None:
                     new_session = (
                         await proxy_server._initialize_shared_aiohttp_session()
                     )
-                except Exception:
-                    verbose_proxy_logger.exception(
-                        "SESSION REUSE: Exception during shared session recreation"
+                except Exception as e:
+                    log_proxy_exception(
+                        verbose_proxy_logger, "shared_aiohttp_session[recreate]", e
                     )
                     new_session = None
                 if new_session is not None:

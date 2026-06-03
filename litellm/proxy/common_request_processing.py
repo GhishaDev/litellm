@@ -44,6 +44,7 @@ from litellm.proxy.common_utils.callback_utils import (
     get_logging_caching_headers,
     get_remaining_tokens_and_requests_from_request_data,
 )
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.dd_span_tagger import DDSpanTagger
 from litellm.proxy.route_llm_request import route_request
 from litellm.proxy.utils import ProxyLogging
@@ -249,9 +250,7 @@ async def create_response(
         )
     except Exception as e:
         # Unexpected error consuming first chunk.
-        verbose_proxy_logger.exception(
-            f"Error consuming first chunk from generator: {e}"
-        )
+        log_proxy_exception(verbose_proxy_logger, "stream[first-chunk]", e)
 
         # Preserve status code from HTTPException (e.g., guardrail blocks)
         error_status = getattr(e, "status_code", status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1344,9 +1343,7 @@ class ProxyBaseLLMRequestProcessing:
                 try:
                     _enqueue_fn()
                 except Exception as e:
-                    verbose_proxy_logger.exception(
-                        "Error firing deferred logging: %s", e
-                    )
+                    log_proxy_exception(verbose_proxy_logger, "deferred_logging", e)
 
             # Streaming cleanup: if an exception occurred AND the deferred
             # streaming closure is still set, no streaming route will
@@ -1372,8 +1369,10 @@ class ProxyBaseLLMRequestProcessing:
                             )
                         )
                     except Exception as e:
-                        verbose_proxy_logger.exception(
-                            "Error in orphaned streaming async logging: %s", e
+                        log_proxy_exception(
+                            verbose_proxy_logger,
+                            "orphaned_streaming_async_logging",
+                            e,
                         )
                     try:
                         from litellm.litellm_core_utils.thread_pool_executor import (
@@ -1388,8 +1387,10 @@ class ProxyBaseLLMRequestProcessing:
                             end_time=None,
                         )
                     except Exception as e:
-                        verbose_proxy_logger.exception(
-                            "Error in orphaned streaming sync logging: %s", e
+                        log_proxy_exception(
+                            verbose_proxy_logger,
+                            "orphaned_streaming_sync_logging",
+                            e,
                         )
 
         # Always return the client-requested model name (not provider-prefixed internal identifiers)
@@ -1610,10 +1611,15 @@ class ProxyBaseLLMRequestProcessing:
                     if guardrail_result is not None:
                         _response = guardrail_result
                 except Exception as e:
-                    verbose_proxy_logger.exception(
-                        "Error running post-call guardrail %s on streaming response: %s",
-                        getattr(cb, "guardrail_name", type(cb).__name__),
+                    log_proxy_exception(
+                        verbose_proxy_logger,
+                        "post_call_streaming_guardrail",
                         e,
+                        extra={
+                            "guardrail": getattr(
+                                cb, "guardrail_name", type(cb).__name__
+                            )
+                        },
                     )
                     if isinstance(e, HTTPException) and hasattr(
                         captured_logging_obj, "model_call_details"
@@ -1622,8 +1628,9 @@ class ProxyBaseLLMRequestProcessing:
                             "metadata", {}
                         )["guardrail_blocked"] = True
         except Exception as e:
-            verbose_proxy_logger.exception(
-                "Error in deferred streaming guardrail initialization: %s",
+            log_proxy_exception(
+                verbose_proxy_logger,
+                "deferred_streaming_guardrail_init",
                 e,
             )
         finally:
@@ -1637,8 +1644,9 @@ class ProxyBaseLLMRequestProcessing:
                     )
                 )
             except Exception as e:
-                verbose_proxy_logger.exception(
-                    "Error in deferred streaming async logging: %s",
+                log_proxy_exception(
+                    verbose_proxy_logger,
+                    "deferred_streaming_async_logging",
                     e,
                 )
 
@@ -1651,8 +1659,9 @@ class ProxyBaseLLMRequestProcessing:
                     end_time=None,
                 )
             except Exception as e:
-                verbose_proxy_logger.exception(
-                    "Error in deferred streaming sync logging: %s",
+                log_proxy_exception(
+                    verbose_proxy_logger,
+                    "deferred_streaming_sync_logging",
                     e,
                 )
 
@@ -1664,9 +1673,7 @@ class ProxyBaseLLMRequestProcessing:
         version: Optional[str] = None,
     ):
         """Raises ProxyException (OpenAI API compatible) if an exception is raised"""
-        verbose_proxy_logger.exception(
-            f"litellm.proxy.proxy_server._handle_llm_api_exception(): Exception occured - {str(e)}"
-        )
+        log_proxy_exception(verbose_proxy_logger, "llm_api[handle-exception]", e)
         # Allow callbacks to transform the error response
         transformed_exception = await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict,
@@ -1956,11 +1963,7 @@ class ProxyBaseLLMRequestProcessing:
                         )
                 yield serialize_chunk(chunk)
         except Exception as e:
-            verbose_proxy_logger.exception(
-                "litellm.proxy.proxy_server.async_data_generator(): Exception occured - {}".format(
-                    str(e)
-                )
-            )
+            log_proxy_exception(verbose_proxy_logger, "async_data_generator[stream]", e)
             transformed_exception = await proxy_logging_obj.post_call_failure_hook(
                 user_api_key_dict=user_api_key_dict,
                 original_exception=e,

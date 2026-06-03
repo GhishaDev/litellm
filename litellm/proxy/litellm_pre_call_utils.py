@@ -21,6 +21,7 @@ from litellm.proxy._types import (
     TeamCallbackMetadata,
     UserAPIKeyAuth,
 )
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.common_utils.http_parsing_utils import _safe_get_request_headers
 
 # Cache special headers as a frozenset for O(1) lookup performance
@@ -143,9 +144,7 @@ def safe_add_api_version_from_query_params(data: dict, request: Request):
     except KeyError:
         pass
     except Exception as e:
-        verbose_logger.exception(
-            "error checking api version in query params: %s", str(e)
-        )
+        log_proxy_exception(verbose_proxy_logger, "api_version_query_param_parse", e)
 
 
 def convert_key_logging_metadata_to_callback(

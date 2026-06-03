@@ -58,6 +58,7 @@ from litellm.proxy.auth.oauth2_check import Oauth2Handler
 from litellm.proxy.auth.oauth2_proxy_hook import handle_oauth2_proxy_request
 from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.common_utils.cache_coordinator import EventDrivenCacheCoordinator
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.common_utils.http_parsing_utils import (
     _read_request_body,
     _safe_get_request_headers,
@@ -295,7 +296,7 @@ async def user_api_key_auth_websocket(websocket: WebSocket):
     try:
         return await user_api_key_auth(request=request, api_key=f"Bearer {api_key}")
     except Exception as e:
-        verbose_proxy_logger.exception(e)
+        log_proxy_exception(verbose_proxy_logger, "websocket_auth", e)
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         raise HTTPException(status_code=403, detail=str(e))
 
@@ -1698,8 +1699,12 @@ def get_api_key_from_custom_header(
             )
         )
     else:
-        verbose_proxy_logger.exception(
-            f"No LiteLLM Virtual Key pass. Please set header={custom_litellm_key_header_name}: Bearer <api_key>"
+        # Not an exception at all — header just isn't set. Demote from
+        # .exception() (which used to print "(NoneType: None)" with no
+        # current exception) to a single WARNING line.
+        verbose_proxy_logger.warning(
+            "No LiteLLM Virtual Key pass. Please set header=%s: Bearer <api_key>",
+            custom_litellm_key_header_name,
         )
     return api_key
 

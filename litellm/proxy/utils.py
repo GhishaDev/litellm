@@ -101,6 +101,7 @@ from litellm.proxy._types import (
     UserAPIKeyAuth,
 )
 from litellm.proxy.auth.route_checks import RouteChecks
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.db.create_views import (
     create_missing_views,
     should_create_missing_views,
@@ -1847,12 +1848,16 @@ class ProxyLogging:
                             transformed_exception = e
                     except Exception as e:
                         # Log non-HTTPException errors from callbacks but don't break the flow
-                        verbose_proxy_logger.exception(
-                            f"[Non-Blocking] Error in async_post_call_failure_hook callback: {e}"
+                        log_proxy_exception(
+                            verbose_proxy_logger,
+                            "async_post_call_failure_hook_callback",
+                            e,
                         )
             except Exception as e:
-                verbose_proxy_logger.exception(
-                    f"[Non-Blocking] Error setting up post_call_failure_hook callback: {e}"
+                log_proxy_exception(
+                    verbose_proxy_logger,
+                    "post_call_failure_hook_setup",
+                    e,
                 )
 
         return transformed_exception
@@ -2143,8 +2148,8 @@ class ProxyLogging:
                     if result is not None:
                         merged_headers.update(result)
         except Exception as e:
-            verbose_proxy_logger.exception(
-                "Error in post_call_response_headers_hook: %s", str(e)
+            log_proxy_exception(
+                verbose_proxy_logger, "post_call_response_headers_hook", e
             )
         return merged_headers
 
@@ -4647,9 +4652,7 @@ async def send_email(
             )
 
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "An error occurred while sending the email:" + str(e)
-        )
+        log_proxy_exception(verbose_proxy_logger, "send_email", e)
 
 
 def hash_token(token: str):
