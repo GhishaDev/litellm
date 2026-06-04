@@ -1923,12 +1923,21 @@ class BaseLLMHTTPHandler:
                     )
                 )
                 if should_retry and not hit_max_attempt:
-                    verbose_logger.debug(
-                        "Anthropic /v1/messages: invalid thinking signature; "
-                        "stripping thinking blocks and retrying (attempt %s/%s).",
+                    verbose_logger.warning(
+                        "Anthropic /v1/messages: invalid thinking signature for "
+                        "model=%s call_id=%s; stripping thinking blocks and retrying "
+                        "(attempt %s/%s). Enabled via "
+                        "anthropic_strip_thinking_on_signature_error — reasoning "
+                        "context is dropped, and a recurring signal here usually "
+                        "means routing/key instability worth investigating.",
+                        model,
+                        getattr(logging_obj, "litellm_call_id", None),
                         attempt_idx + 2,
                         max_attempts,
                     )
+                    logging_obj.model_call_details[
+                        "litellm_thinking_signature_stripped"
+                    ] = True
                     provider_config.transform_anthropic_messages_request_on_http_error(
                         e=e, request_data=request_body
                     )
@@ -2016,7 +2025,11 @@ class BaseLLMHTTPHandler:
         )
 
         headers = update_headers_with_filtered_beta(
-            headers=headers, provider=custom_llm_provider
+            headers=headers,
+            provider=custom_llm_provider,
+            overrides=(dict(litellm_params) if litellm_params else {}).get(
+                "anthropic_beta_overrides"
+            ),
         )
 
         logging_obj.update_from_kwargs(

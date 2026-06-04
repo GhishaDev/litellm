@@ -410,6 +410,26 @@ case_18() {
     fi
 }
 
+# ------------------------------------------------------------------ 19
+case_19() {
+    echo "[19] Anthropic invalid-thinking-signature retry gate..."
+    local out=/tmp/e2e_case19.out
+    bash e2e/cases/data/19_anthropic_thinking_signature_retry_gate.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "19 thinking-signature-retry: $(grep -c '^PASS' "$out") assertions PASS"
+    elif [ "$rc" -eq 77 ]; then
+        # Many upstream gateways accept fabricated thinking signatures
+        # (they don't propagate Anthropic's exact error string). Case 19
+        # SKIPs cleanly in that case — the unit tests in
+        # tests/test_litellm/llms/anthropic/test_anthropic_thinking_signature_retry.py
+        # cover the gate functionally regardless of upstream.
+        skip "19 thinking-signature-retry" "$(grep -m1 SKIP "$out")"
+    else
+        fail "19 thinking-signature-retry" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # ------------------------------------------------------------------ 20
 case_20() {
     echo "[20] returned_model_name override (4 paths)..."
@@ -564,9 +584,11 @@ case_16
 case_17
 if [ "$SKIP_PAID" -eq 1 ]; then
     skip "18 public-req-middleware" "skipped (--skip-paid)"
+    skip "19 thinking-signature-retry" "skipped (--skip-paid)"
     skip "20 returned-model-name" "skipped (--skip-paid)"
 else
     case_18
+    case_19
     case_20
 fi
 

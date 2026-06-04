@@ -32,6 +32,12 @@ _OPTIONAL_KWARGS_KEYS = frozenset(
         "aws_bedrock_runtime_endpoint",
         "tpm",
         "rpm",
+        # Per-deployment override map for Anthropic beta headers. Threaded
+        # from `litellm.completion(anthropic_beta_overrides=...)` or proxy
+        # `model_list[].litellm_params.anthropic_beta_overrides` through
+        # `litellm_params` to the Anthropic provider's beta-header manager.
+        # See litellm/anthropic_beta_headers_manager.py.
+        "anthropic_beta_overrides",
     }
 )
 

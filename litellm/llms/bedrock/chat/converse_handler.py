@@ -369,7 +369,9 @@ class BedrockConverseLLM(BaseAWSLLM):
 
         # Filter beta headers in HTTP headers before making the request
         headers = update_headers_with_filtered_beta(
-            headers=headers, provider="bedrock_converse"
+            headers=headers,
+            provider="bedrock_converse",
+            overrides=(litellm_params or {}).get("anthropic_beta_overrides"),
         )
         ### ROUTING (ASYNC, STREAMING, SYNC)
         if acompletion:
