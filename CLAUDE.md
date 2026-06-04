@@ -130,7 +130,7 @@ The examples below use the current pin `v1.83.10`.
 |---|---|---|
 | `<pin>-stable` tag — e.g. `v1.83.10-stable` | Immutable upstream pin | yes — never moves |
 | `ship/<pin>` — e.g. `ship/v1.83.10` | Long-term ship — advances only via merged `fix/*` PRs | yes |
-| `internal/<pin>-stable` — e.g. `internal/v1.83.10-stable` | Upstream-sync working branch | no — collects upstream commits |
+| `internal/<pin>-stable` — e.g. `internal/v1.83.10-stable` | **Optional** bump-preview sandbox. Test-merge `upstream/main` here before a version bump to surface conflicts. Not required for routine sync — that's what `scripts/upstream-sync-check.sh` is for | no — accumulates upstream merges if used |
 | `litellm_internal_staging` | Pure upstream tracker for `BerriAI/litellm` | tracks upstream |
 | `fix/<name>` | Per-bug feature branch | yes — merged into the ship branch |
 
@@ -142,7 +142,10 @@ gh pr create --base "$SHIP" --head fix/<name>
 
 The ship branch only moves when a `fix/*` PR merges, so it stays
 exactly `TAG + merged fixes`. Fixes never have to rebase against moving
-upstream — the upstream-sync churn lives on the upstream-sync branch.
+upstream. Routine awareness of upstream drift comes from
+`scripts/upstream-sync-check.sh` (see Upstream sync cadence); the
+`internal/<pin>-stable` sandbox is opt-in — use it before a version
+bump, not as a continuous mirror.
 
 ## Cutting an internal release
 
