@@ -7,10 +7,10 @@ A single request that marks the system prompt with
 1. Cause Anthropic to write a 5-minute cache entry, reflected as
    `cache_creation_input_tokens > 0` in the API response.
 2. Increment
-   `litellm_prompt_cache_creation_tokens_metric{cache_ttl="5m", api_provider="anthropic"}`
+   `litellm_input_cache_creation_tokens_metric{cache_ttl="5m", api_provider="anthropic"}`
    by exactly that amount.
 3. **Not** increment any `cache_ttl="1h"` series.
-4. **Not** increment `litellm_prompt_cache_read_tokens_metric` (first
+4. **Not** increment `litellm_input_cached_tokens_metric` (first
    request, nothing to read yet).
 
 ## Preconditions
@@ -50,9 +50,9 @@ jq '.response.usage' /tmp/call_response.json
 
 # 5. Diff metrics
 e2e/tools/metrics diff /tmp/m_before.json /tmp/m_after.json \
-    --metric litellm_prompt_cache_creation_tokens_metric
+    --metric litellm_input_cache_creation_tokens_metric
 e2e/tools/metrics diff /tmp/m_before.json /tmp/m_after.json \
-    --metric litellm_prompt_cache_read_tokens_metric
+    --metric litellm_input_cached_tokens_metric
 ```
 
 ## Expected
@@ -60,10 +60,10 @@ e2e/tools/metrics diff /tmp/m_before.json /tmp/m_after.json \
 - `response_status` == 200 in `/tmp/call_response.json`
 - `.response.usage.cache_creation_input_tokens` > 0
 - `.response.usage.cache_read_input_tokens` == 0 (first time this prefix is sent)
-- Diff for `litellm_prompt_cache_creation_tokens_metric` shows **exactly one**
+- Diff for `litellm_input_cache_creation_tokens_metric` shows **exactly one**
   row with `cache_ttl="5m"`, `api_provider="anthropic"`, `delta` ==
   `cache_creation_input_tokens`
-- Diff for `litellm_prompt_cache_read_tokens_metric` shows no rows
+- Diff for `litellm_input_cached_tokens_metric` shows no rows
   (or shows rows only from unrelated traffic — judge by labels)
 
 ## Common failures

@@ -239,12 +239,6 @@ DEFINED_PROMETHEUS_METRICS = Literal[
     "litellm_cache_hits_metric",
     "litellm_cache_misses_metric",
     "litellm_cached_tokens_metric",
-    # Provider-side prompt cache token metrics
-    # Source: standard_logging_payload.hidden_params.usage_object.prompt_tokens_details
-    # `cached_tokens`           -> normalized cache READ across Anthropic / OpenAI / DeepSeek / Gemini / Bedrock-Claude
-    # `cache_creation_tokens`   -> cache WRITE (Anthropic-only concept). Split by 5m / 1h TTL via cache_ttl label.
-    "litellm_prompt_cache_read_tokens_metric",
-    "litellm_prompt_cache_creation_tokens_metric",
     "litellm_deployment_tpm_limit",
     "litellm_deployment_rpm_limit",
     "litellm_remaining_api_key_requests_for_model",
@@ -469,7 +463,12 @@ class PrometheusMetricLabels:
     # populated by the provider (e.g. Anthropic cache_read_input_tokens,
     # OpenAI prompt_tokens_details.cached_tokens, reasoning_tokens, audio_tokens).
     litellm_input_cached_tokens_metric = litellm_input_tokens_metric
-    litellm_input_cache_creation_tokens_metric = litellm_input_tokens_metric
+    # `cache_ttl` distinguishes Anthropic 5m vs 1h ephemeral cache writes
+    # (provider charges 2x for 1h vs 5m). `unknown` when the response lacks
+    # the per-TTL breakdown.
+    litellm_input_cache_creation_tokens_metric = litellm_input_tokens_metric + [
+        UserAPIKeyLabelNames.CACHE_TTL.value
+    ]
     litellm_input_audio_tokens_metric = litellm_input_tokens_metric
     litellm_output_reasoning_tokens_metric = litellm_output_tokens_metric
     litellm_output_audio_tokens_metric = litellm_output_tokens_metric
@@ -661,28 +660,6 @@ class PrometheusMetricLabels:
     litellm_cache_hits_metric = _cache_metric_labels
     litellm_cache_misses_metric = _cache_metric_labels
     litellm_cached_tokens_metric = _cache_metric_labels
-
-    # Provider-side prompt cache token metrics labels
-    # Extend with `api_provider` so users can split anthropic / openai / bedrock / vertex.
-    _prompt_cache_token_metric_labels = [
-        UserAPIKeyLabelNames.v1_LITELLM_MODEL_NAME.value,
-        UserAPIKeyLabelNames.API_PROVIDER.value,
-        UserAPIKeyLabelNames.API_KEY_HASH.value,
-        UserAPIKeyLabelNames.API_KEY_ALIAS.value,
-        UserAPIKeyLabelNames.TEAM.value,
-        UserAPIKeyLabelNames.TEAM_ALIAS.value,
-        UserAPIKeyLabelNames.END_USER.value,
-        UserAPIKeyLabelNames.USER.value,
-        UserAPIKeyLabelNames.MODEL_ID.value,
-    ]
-
-    litellm_prompt_cache_read_tokens_metric = _prompt_cache_token_metric_labels
-
-    # cache_creation adds `cache_ttl` to distinguish ephemeral 5m vs 1h writes (Anthropic).
-    # When the provider does not surface TTL breakdown, cache_ttl="unknown".
-    litellm_prompt_cache_creation_tokens_metric = _prompt_cache_token_metric_labels + [
-        UserAPIKeyLabelNames.CACHE_TTL.value
-    ]
 
     # Metrics whose emission paths supply org context (used by get_labels)
     _org_label_metrics: ClassVar[frozenset] = frozenset(

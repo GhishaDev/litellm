@@ -15,11 +15,11 @@ verdict. See "Mock-only mode" section below.
 
 | # | File | Tier | Provider | Metric verified | Needs DB |
 |---|------|------|----------|-----------------|---|
-| 01 | `01_prometheus_anthropic_creation_5m.md` | real | Anthropic | `litellm_prompt_cache_creation_tokens_metric{cache_ttl="5m"}` | — |
-| 02 | `02_prometheus_anthropic_creation_1h.md` | real | Anthropic | `litellm_prompt_cache_creation_tokens_metric{cache_ttl="1h"}` | — |
-| 03 | `03_prometheus_anthropic_read.md` | real | Anthropic | `litellm_prompt_cache_read_tokens_metric` | — |
+| 01 | `01_prometheus_anthropic_creation_5m.md` | real | Anthropic | `litellm_input_cache_creation_tokens_metric{cache_ttl="5m"}` | — |
+| 02 | `02_prometheus_anthropic_creation_1h.md` | real | Anthropic | `litellm_input_cache_creation_tokens_metric{cache_ttl="1h"}` | — |
+| 03 | `03_prometheus_anthropic_read.md` | real | Anthropic | `litellm_input_cached_tokens_metric` | — |
 | 04 | `04_prometheus_no_cache_baseline.md` | both | Anthropic | cache metrics unchanged when no `cache_control` | — |
-| 05 | `05_prometheus_openai_read.md` | real | OpenAI | `litellm_prompt_cache_read_tokens_metric` (provider auto-cache) | — |
+| 05 | `05_prometheus_openai_read.md` | real | OpenAI | `litellm_input_cached_tokens_metric` (provider auto-cache) | — |
 | 06 | `06_prometheus_openai_no_creation.md` | both | OpenAI | `creation_tokens_metric` never emits for OpenAI | — |
 | 07 | `07_prometheus_endpoint_smoke.md` | mock | (any) | `/metrics` endpoint serves valid Prometheus text format | — |
 | 08 | `08_prometheus_virtual_key_labels.md` | real | Anthropic | per-virtual-key `hashed_api_key` + `api_key_alias` labels | ✓ |

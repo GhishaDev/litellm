@@ -90,14 +90,14 @@ snap_sum() {
 case_01() {
     echo "[01] anthropic 5m TTL creation..."
     local before after seed usage delta
-    before=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
+    before=$(snap_sum litellm_input_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
     seed="case01-$$-$(date +%s)"
     local resp
     resp=$(e2e/tools/call --provider anthropic --cache ephemeral --ttl 5m \
         --prompt-tokens 1500 --seed "$seed" --user-id "case01-user-$seed" 2>/dev/null)
     usage=$(echo "$resp" | jq -r '.response.usage.cache_creation_input_tokens // 0')
     sleep 1
-    after=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
+    after=$(snap_sum litellm_input_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
     delta=$((after - before))
     if [ "$usage" -gt 0 ] && [ "$delta" -ge "$((usage - 1))" ] && [ "$delta" -le "$((usage + 50))" ]; then
         ok "01 anthropic-5m-creation: usage=$usage, metric_delta=$delta"
@@ -110,14 +110,14 @@ case_01() {
 case_02() {
     echo "[02] anthropic 1h TTL creation..."
     local before after seed usage delta
-    before=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="1h"')
+    before=$(snap_sum litellm_input_cache_creation_tokens_metric anthropic 'cache_ttl="1h"')
     seed="case02-$$-$(date +%s)"
     local resp
     resp=$(e2e/tools/call --provider anthropic --cache ephemeral --ttl 1h \
         --prompt-tokens 1500 --seed "$seed" --user-id "case02-user-$seed" 2>/dev/null)
     usage=$(echo "$resp" | jq -r '.response.usage.prompt_tokens_details.cache_creation_token_details.ephemeral_1h_input_tokens // 0')
     sleep 1
-    after=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="1h"')
+    after=$(snap_sum litellm_input_cache_creation_tokens_metric anthropic 'cache_ttl="1h"')
     delta=$((after - before))
     if [ "$usage" -gt 0 ] && [ "$delta" -ge "$((usage - 1))" ] && [ "$delta" -le "$((usage + 50))" ]; then
         ok "02 anthropic-1h-creation: usage=$usage, metric_delta=$delta"
@@ -143,8 +143,8 @@ case_03() {
 case_04() {
     echo "[04] no-cache baseline..."
     local b5 br seed usage_cc usage_cr d5 dr
-    b5=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
-    br=$(snap_sum litellm_prompt_cache_read_tokens_metric anthropic)
+    b5=$(snap_sum litellm_input_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
+    br=$(snap_sum litellm_input_cached_tokens_metric anthropic)
     seed="case04-$$-$(date +%s)"
     local resp
     resp=$(e2e/tools/call --provider anthropic --cache none \
@@ -154,8 +154,8 @@ case_04() {
     usage_cr=$(echo "$resp" | jq -r '.response.usage.cache_read_input_tokens // 0')
     sleep 1
     local a5 ar
-    a5=$(snap_sum litellm_prompt_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
-    ar=$(snap_sum litellm_prompt_cache_read_tokens_metric anthropic)
+    a5=$(snap_sum litellm_input_cache_creation_tokens_metric anthropic 'cache_ttl="5m"')
+    ar=$(snap_sum litellm_input_cached_tokens_metric anthropic)
     d5=$((a5 - b5))
     dr=$((ar - br))
     if [ "$usage_cc" -eq 0 ] && [ "$usage_cr" -eq 0 ] && [ "$d5" -eq 0 ] && [ "$dr" -eq 0 ]; then
@@ -169,7 +169,7 @@ case_04() {
 case_05() {
     echo "[05] openai/glm cache read..."
     local before after seed cached delta
-    before=$(snap_sum litellm_prompt_cache_read_tokens_metric openai)
+    before=$(snap_sum litellm_input_cached_tokens_metric openai)
     seed="case05-$$-$(date +%s)"
     e2e/tools/call --provider openai --prompt-tokens 1800 --seed "$seed" > /dev/null 2>&1
     sleep 2
@@ -177,7 +177,7 @@ case_05() {
     resp=$(e2e/tools/call --provider openai --prompt-tokens 1800 --seed "$seed" 2>/dev/null)
     cached=$(echo "$resp" | jq -r '.response.usage.prompt_tokens_details.cached_tokens // 0')
     sleep 1
-    after=$(snap_sum litellm_prompt_cache_read_tokens_metric openai)
+    after=$(snap_sum litellm_input_cached_tokens_metric openai)
     delta=$((after - before))
     if [ "$cached" -gt 0 ] && [ "$delta" -ge "$cached" ]; then
         ok "05 openai-cache-read: cached=$cached, metric_delta=$delta"
@@ -191,7 +191,7 @@ case_06() {
     echo "[06] openai never emits creation metric..."
     local rows
     rows=$(curl -sSL "$PROXY/metrics" 2>/dev/null \
-        | grep "^litellm_prompt_cache_creation_tokens_metric_total" \
+        | grep "^litellm_input_cache_creation_tokens_metric_total" \
         | grep -cE '(openai|glm)' || true)
     if [ "$rows" -eq 0 ]; then
         ok "06 openai-no-creation: 0 rows (correct)"
@@ -232,7 +232,7 @@ case_08() {
         --user-id "case08-user-$seed" > /dev/null 2>&1
     sleep 2
     hits=$(curl -sSL "$PROXY/metrics" 2>/dev/null \
-        | grep "^litellm_prompt_cache_creation_tokens_metric_total" \
+        | grep "^litellm_input_cache_creation_tokens_metric_total" \
         | grep -cF "$alias" || true)
     if [ "$hits" -ge 1 ]; then
         ok "08 virtual-key-labels: $hits metric row(s) carry api_key_alias=$alias"
@@ -271,10 +271,10 @@ case_09() {
         --user-id "$tb_alias-user" > /dev/null 2>&1
     sleep 2
     hits_a=$(curl -sSL "$PROXY/metrics" 2>/dev/null \
-        | grep "^litellm_prompt_cache_creation_tokens_metric_total" \
+        | grep "^litellm_input_cache_creation_tokens_metric_total" \
         | grep -cF "$ta_alias" || true)
     hits_b=$(curl -sSL "$PROXY/metrics" 2>/dev/null \
-        | grep "^litellm_prompt_cache_creation_tokens_metric_total" \
+        | grep "^litellm_input_cache_creation_tokens_metric_total" \
         | grep -cF "$tb_alias" || true)
     if [ "$hits_a" -ge 1 ] && [ "$hits_b" -ge 1 ]; then
         ok "09 per-team-isolation: team_a rows=$hits_a, team_b rows=$hits_b"

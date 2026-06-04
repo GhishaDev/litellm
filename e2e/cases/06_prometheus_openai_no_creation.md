@@ -2,7 +2,7 @@
 
 ## Goal
 
-`litellm_prompt_cache_creation_tokens_metric` is an Anthropic-only
+`litellm_input_cache_creation_tokens_metric` is an Anthropic-only
 concept (LiteLLM's `prompt_tokens_details.cache_creation_tokens` is
 populated only from Anthropic's `cache_creation_input_tokens`). Even
 when OpenAI auto-caches a long prompt, this metric must **not**
@@ -34,7 +34,7 @@ e2e/tools/metrics snapshot > /tmp/m_after.json
 
 # Look for ANY row with api_provider=openai in the creation metric
 e2e/tools/metrics diff /tmp/m_before.json /tmp/m_after.json \
-    --metric litellm_prompt_cache_creation_tokens_metric \
+    --metric litellm_input_cache_creation_tokens_metric \
     --label api_provider=openai
 ```
 

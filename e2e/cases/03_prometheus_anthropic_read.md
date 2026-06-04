@@ -5,7 +5,7 @@
 Two identical Anthropic requests (same `cache_control`-marked system
 prompt, same seed). The **second** request should read from cache:
 - `cache_read_input_tokens > 0` in the API response
-- `litellm_prompt_cache_read_tokens_metric` increments
+- `litellm_input_cached_tokens_metric` increments
 
 The first request still writes the cache; you'll see the creation
 counter move too, but we focus the assertions on the read counter delta
@@ -47,7 +47,7 @@ e2e/tools/metrics snapshot > /tmp/m_after.json
 
 # 5. Diff: focus on the read metric
 e2e/tools/metrics diff /tmp/m_before.json /tmp/m_after.json \
-    --metric litellm_prompt_cache_read_tokens_metric
+    --metric litellm_input_cached_tokens_metric
 ```
 
 ## Expected
@@ -56,7 +56,7 @@ e2e/tools/metrics diff /tmp/m_before.json /tmp/m_after.json \
   `cache_read_input_tokens == 0`
 - Second request: `cache_read_input_tokens > 0`,
   `cache_creation_input_tokens` either 0 or small (refresh)
-- Diff for `litellm_prompt_cache_read_tokens_metric` shows one row with
+- Diff for `litellm_input_cached_tokens_metric` shows one row with
   `api_provider="anthropic"` and `delta` == second request's
   `cache_read_input_tokens`
 
