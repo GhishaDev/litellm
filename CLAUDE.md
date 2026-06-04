@@ -79,8 +79,9 @@ becomes a multi-week project. The schedule below keeps drift bounded.
 
 **Monthly** (first Monday):
 
-- Run `scripts/upstream-sync-check.sh` (TODO) to list commits on
-  upstream's current stable line and on `upstream/main` since our pin.
+- Run `scripts/upstream-sync-check.sh` to list missed patches on the
+  pinned line, newer minor lines, `upstream/main` commit volume, and
+  security-flagged subjects since our pin.
 - Triage security fixes (filter for `[SECURITY]`, `fix(auth)`, CVE
   labels). Open `fix/*` PRs for each must-backport item.
 - 30-minute review with one other engineer.
