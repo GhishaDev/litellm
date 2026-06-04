@@ -24,7 +24,7 @@ export const getCallbackConfigsCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -54,7 +54,7 @@ export const getInProductNudgesCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -69,7 +69,7 @@ export const getInProductNudgesCall = async (accessToken: string) => {
  * Helper file for calls being made to proxy
  */
 import MessageManager from "@/components/molecules/message_manager";
-import { clearTokenCookies, getCookie, storeLoginToken } from "@/utils/cookieUtils";
+import { clearTokenCookies, storeLoginToken } from "@/utils/cookieUtils";
 import { TagNewRequest, TagUpdateRequest, TagListResponse, TagInfoResponse } from "./tag_management/types";
 import { Team } from "./key_team_helpers/key_list";
 import { UserInfo } from "./view_users/types";
@@ -341,100 +341,20 @@ export interface CredentialsResponse {
 
 let lastErrorTime = 0;
 
-// Substrings the backend uses across the various ways an auth credential
-// becomes invalid (expired, revoked, no token, malformed). Matching ANY of
-// these means "your session is gone — go log in again". String matching is
-// fragile by nature (backend wording can drift), so we treat these as a
-// best-effort fallback. The primary signal — when the caller can supply it
-// — is HTTP status + the cookie presence check, see `handleErrorResponse`.
-const SESSION_EXPIRED_SIGNALS = [
-  "Authentication Error - Expired Key",
-  "Authentication Error - Invalid",
-  "Authentication Error: Invalid",
-  "Authentication Error, Invalid", // comma variant emitted by token-not-found path
-  "token has been revoked",
-  "No auth header",
-  "Session expired",
-  "UI Session Expired",
-];
-
-const isSessionExpiredFromMessage = (errorString: string): boolean =>
-  SESSION_EXPIRED_SIGNALS.some((marker) => errorString.includes(marker));
-
-/**
- * Redirect to the login page and clear any auth state. Used by both the
- * status-based and the message-based detection paths so the actual
- * "log the user out" mechanics live in one place.
- */
-const triggerSessionExpiredRedirect = () => {
-  NotificationsManager.info("UI Session Expired. Logging out.");
-  clearTokenCookies();
-  const browserLocation = getWindowLocation();
-  if (browserLocation) {
-    window.location.href = browserLocation.pathname;
-  }
-};
-
-/**
- * Status-aware error handler — preferred over `handleError` whenever the
- * caller has the original `Response` object. Distinguishes "your session is
- * gone, go log in" (401 with no cookie OR a session-expired marker in the
- * body) from "this endpoint requires more privilege" (403, or 401 while
- * the cookie is still present and the body shape says permission-only).
- *
- * - 401 + session-expired signal -> clear cookies + redirect to login
- * - 403 -> toast only, never redirect (you're logged in, just not allowed)
- * - other errors -> delegate to `handleError` (same rate-limited path)
- */
-export const handleErrorResponse = async (
-  response: Pick<Response, "status"> | { status: number },
-  errorData: string | any,
-): Promise<void> => {
-  const status = response?.status;
-  const errorString = typeof errorData === "string" ? errorData : JSON.stringify(errorData ?? "");
-
-  if (status === 401) {
-    // The most reliable "session is gone" signal: the cookie is no longer
-    // present at all. If a session ever existed it has been cleared
-    // already, so push the user back to login.
-    const hasAuthCookie =
-      typeof window !== "undefined" && Boolean(getCookie("token") || getCookie("session_token"));
-    if (!hasAuthCookie || isSessionExpiredFromMessage(errorString)) {
-      triggerSessionExpiredRedirect();
-      return;
-    }
-    // 401 but the cookie is still present — likely "your role can't call
-    // THIS specific endpoint" expressed as 401 (LiteLLM uses 401 for both
-    // session-gone and role-mismatch, sigh). Show a toast, don't bounce
-    // the user out of a perfectly fine session.
-    NotificationsManager.fromBackend(errorData);
-    return;
-  }
-
-  if (status === 403) {
-    // Forbidden = "I know who you are, but you can't do this". Never log
-    // the user out for a 403; just surface what the backend said.
-    NotificationsManager.fromBackend(errorData);
-    return;
-  }
-
-  // Non-auth errors fall through to the existing rate-limited handler.
-  await handleError(errorData);
-};
-
 export const handleError = async (errorData: string | any) => {
   const currentTime = Date.now();
   if (currentTime - lastErrorTime > 60000) {
     // 60000 milliseconds = 60 seconds
     // Convert errorData to string if it isn't already
     const errorString = typeof errorData === "string" ? errorData : JSON.stringify(errorData);
-    // Match any known session-expired marker, not just the historical
-    // "Expired Key" wording — the backend emits several variants and the
-    // single-string match used to miss most of them.
-    if (isSessionExpiredFromMessage(errorString)) {
+    if (errorString.includes("Authentication Error - Expired Key")) {
+      NotificationsManager.info("UI Session Expired. Logging out.");
       lastErrorTime = currentTime;
-      triggerSessionExpiredRedirect();
-      return;
+      clearTokenCookies();
+      const browserLocation = getWindowLocation();
+      if (browserLocation) {
+        window.location.href = browserLocation.pathname;
+      }
     }
     lastErrorTime = currentTime;
   } else {
@@ -692,7 +612,7 @@ export const modelCreateCall = async (accessToken: string, formValues: Model) =>
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -730,7 +650,7 @@ export const modelDeleteCall = async (accessToken: string, model_id: string) => 
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -766,7 +686,7 @@ export const budgetDeleteCall = async (accessToken: string | null, budget_id: st
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -802,7 +722,7 @@ export const budgetCreateCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -839,7 +759,7 @@ export const budgetUpdateCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -873,7 +793,7 @@ export const invitationCreateCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -906,7 +826,7 @@ export const alertingSettingsCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1167,7 +1087,7 @@ export const keyDeleteCall = async (accessToken: string, user_key: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1201,7 +1121,7 @@ export const userDeleteCall = async (accessToken: string, userIds: string[]) => 
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1233,7 +1153,7 @@ export const teamDeleteCall = async (accessToken: string, teamID: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1334,7 +1254,7 @@ export const userListCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1396,7 +1316,7 @@ export const userGetInfoV2 = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1449,7 +1369,7 @@ export const userInfoCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1466,7 +1386,7 @@ export const teamInfoCall = async (accessToken: string, teamID: string | null) =
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/team/info` : `/team/info`;
     if (teamID) {
-      url = `${url}?team_id=${teamID}`;
+      url = `${url}?team_id=${encodeURIComponent(teamID)}`;
     }
     console.log("in teamInfoCall");
     const response = await fetch(url, {
@@ -1480,7 +1400,7 @@ export const teamInfoCall = async (accessToken: string, teamID: string | null) =
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1553,7 +1473,7 @@ export const v2TeamListCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1614,7 +1534,7 @@ export const teamListCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1646,7 +1566,7 @@ export const availableTeamListCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1694,7 +1614,7 @@ export const organizationListCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1724,7 +1644,7 @@ export const organizationInfoCall = async (accessToken: string, organizationID: 
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1771,7 +1691,7 @@ export const organizationCreateCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1807,7 +1727,7 @@ export const organizationUpdateCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1869,7 +1789,7 @@ export const transformRequestCall = async (accessToken: string, request: object)
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -1959,7 +1879,7 @@ const fetchDailyActivity = async ({
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2107,7 +2027,7 @@ export const getOnboardingCredentials = async (inviteUUID: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2144,7 +2064,7 @@ export const claimOnboardingToken = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2176,7 +2096,7 @@ export const regenerateKeyCall = async (accessToken: string, keyToRegenerate: st
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2303,7 +2223,7 @@ export const modelInfoV1Call = async (accessToken: string, modelId: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2393,7 +2313,7 @@ export const modelHubCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2424,7 +2344,7 @@ export const getAllowedIPs = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2454,7 +2374,7 @@ export const addAllowedIP = async (accessToken: string, ip: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2484,7 +2404,7 @@ export const deleteAllowedIP = async (accessToken: string, ip: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2514,7 +2434,7 @@ export const updateUsefulLinksCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2571,7 +2491,7 @@ export const modelAvailableCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2599,7 +2519,7 @@ export const teamSpendLogsCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2641,7 +2561,7 @@ export const tagsSpendLogsCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2669,7 +2589,7 @@ export const allTagNamesCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2697,7 +2617,7 @@ export const allEndUsersCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2736,7 +2656,7 @@ export const userFilterUICall = async (accessToken: string, params: URLSearchPar
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2823,7 +2743,7 @@ export const uiSpendLogsCall = async ({
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2851,7 +2771,7 @@ export const adminSpendLogsCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2880,7 +2800,7 @@ export const adminTopKeysCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2930,7 +2850,7 @@ export const adminTopEndUsersCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -2973,7 +2893,7 @@ export const adminspendByProvider = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3010,7 +2930,7 @@ export const adminGlobalActivity = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3047,7 +2967,7 @@ export const adminGlobalCacheActivity = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3084,7 +3004,7 @@ export const adminGlobalActivityPerModel = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3112,7 +3032,7 @@ export const adminTopModelsCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3336,7 +3256,7 @@ export const keyListCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3391,7 +3311,7 @@ export const keyAliasesCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3441,7 +3361,7 @@ export const userDailyActivityAggregatedCall = async (accessToken: string, start
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3467,7 +3387,7 @@ export const getPossibleUserRoles = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3511,7 +3431,7 @@ export const teamCreateCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3556,7 +3476,7 @@ export const credentialCreateCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3589,7 +3509,7 @@ export const credentialListCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3626,7 +3546,7 @@ export const credentialGetCall = async (accessToken: string, credentialName: str
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3655,7 +3575,7 @@ export const credentialDeleteCall = async (accessToken: string, credentialName: 
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -3701,7 +3621,7 @@ export const credentialUpdateCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4065,7 +3985,7 @@ export const teamMemberDeleteCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4138,7 +4058,7 @@ export const organizationMemberDeleteCall = async (accessToken: string, organiza
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4175,7 +4095,7 @@ export const organizationMemberUpdateCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4214,7 +4134,7 @@ export const userUpdateUserCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4279,7 +4199,7 @@ export const userBulkUpdateUserCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4356,7 +4276,7 @@ export const getBudgetList = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4388,7 +4308,7 @@ export const getCallbacksCall = async (accessToken: string, userID: string, user
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4420,7 +4340,7 @@ export const getGeneralSettingsCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4449,7 +4369,7 @@ export const getRouterSettingsCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4476,7 +4396,7 @@ export const getCacheSettingsCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4506,7 +4426,7 @@ export const testCacheConnectionCall = async (accessToken: string, cacheSettings
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4536,7 +4456,7 @@ export const updateCacheSettingsCall = async (accessToken: string, cacheSettings
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4568,7 +4488,7 @@ export const getPassThroughEndpointsCall = async (accessToken: string, teamId?: 
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4600,7 +4520,7 @@ export const getConfigFieldSetting = async (accessToken: string, fieldName: stri
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4635,7 +4555,7 @@ export const createPassThroughEndpoint = async (accessToken: string, formValues:
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4671,7 +4591,7 @@ export const updateConfigFieldSetting = async (accessToken: string, fieldName: s
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4707,7 +4627,7 @@ export const deleteConfigFieldSetting = async (accessToken: string, fieldName: s
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4739,7 +4659,7 @@ export const deletePassThroughEndpointsCall = async (accessToken: string, endpoi
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4775,7 +4695,7 @@ export const setCallbacksCall = async (accessToken: string, formValues: Record<s
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4809,7 +4729,7 @@ export const individualModelHealthCheckCall = async (accessToken: string, modelI
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4903,7 +4823,7 @@ export const getProxyUISettings = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4963,7 +4883,7 @@ export const getMCPSemanticFilterSettings = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -4996,7 +4916,7 @@ export const updateMCPSemanticFilterSettings = async (accessToken: string, setti
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5048,7 +4968,7 @@ export const testMCPSemanticFilter = async (accessToken: string, model: string, 
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5100,7 +5020,7 @@ export const getGuardrailsList = async (accessToken: string) => {
       if (!fallbackResponse.ok) {
         const errorData = await fallbackResponse.json();
         const errorMessage = deriveErrorMessage(errorData);
-        handleError(errorData);
+        handleError(errorMessage);
         throw new Error(errorMessage);
       }
 
@@ -5162,7 +5082,7 @@ export const listGuardrailSubmissions = async (
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     const errorMessage = deriveErrorMessage(errorData);
-    handleError(errorData);
+    handleError(errorMessage);
     throw new Error(errorMessage);
   }
   return response.json();
@@ -5185,7 +5105,7 @@ export const approveGuardrailSubmission = async (
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     const errorMessage = deriveErrorMessage(errorData);
-    handleError(errorData);
+    handleError(errorMessage);
     throw new Error(errorMessage);
   }
   return response.json();
@@ -5208,7 +5128,7 @@ export const rejectGuardrailSubmission = async (
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     const errorMessage = deriveErrorMessage(errorData);
-    handleError(errorData);
+    handleError(errorMessage);
     throw new Error(errorMessage);
   }
   return response.json();
@@ -5325,7 +5245,7 @@ export const getPoliciesList = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5412,7 +5332,7 @@ export const testPoliciesAndGuardrails = async (
       } catch {
         errorMessage = errorData || errorMessage;
       }
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5437,7 +5357,7 @@ export const getPolicyInfoWithGuardrails = async (accessToken: string, policyNam
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5463,7 +5383,7 @@ export const getPolicyTemplates = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5501,7 +5421,7 @@ export const enrichPolicyTemplate = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5539,7 +5459,7 @@ export const suggestPolicyTemplates = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5574,7 +5494,7 @@ export const testPolicyTemplate = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5619,7 +5539,7 @@ export const enrichPolicyTemplateStream = async (
   if (!response.ok) {
     const errorData = await response.json();
     const errorMessage = deriveErrorMessage(errorData);
-    handleError(errorData);
+    handleError(errorMessage);
     throw new Error(errorMessage);
   }
 
@@ -5694,7 +5614,7 @@ export const usageAiChatStream = async (
   if (!response.ok) {
     const errorData = await response.json();
     const errorMessage = deriveErrorMessage(errorData);
-    handleError(errorData);
+    handleError(errorMessage);
     throw new Error(errorMessage);
   }
 
@@ -5750,7 +5670,7 @@ export const createPolicyCall = async (accessToken: string, policyData: any) => 
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5777,7 +5697,7 @@ export const updatePolicyCall = async (accessToken: string, policyId: string, po
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5809,7 +5729,7 @@ export const listPolicyVersions = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5842,7 +5762,7 @@ export const createPolicyVersion = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5874,7 +5794,7 @@ export const updatePolicyVersionStatus = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5899,7 +5819,7 @@ export const deletePolicyCall = async (accessToken: string, policyId: string) =>
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5925,7 +5845,7 @@ export const getPolicyInfo = async (accessToken: string, policyId: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5953,7 +5873,7 @@ export const getPolicyAttachmentsList = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -5980,7 +5900,7 @@ export const createPolicyAttachmentCall = async (accessToken: string, attachment
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6008,7 +5928,7 @@ export const deletePolicyAttachmentCall = async (accessToken: string, attachment
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6039,7 +5959,7 @@ export const testPipelineCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6067,7 +5987,7 @@ export const getResolvedGuardrails = async (accessToken: string, policyId: strin
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6099,7 +6019,7 @@ export const resolvePoliciesCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6130,7 +6050,7 @@ export const estimateAttachmentImpactCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6161,7 +6081,7 @@ export const getPromptsList = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6190,7 +6110,7 @@ export const getPromptInfo = async (accessToken: string, promptId: string, envir
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6221,7 +6141,7 @@ export const getPromptVersions = async (accessToken: string, promptId: string, e
       const errorMessage = deriveErrorMessage(errorData);
       // Don't throw global error for 404 (no versions found) as we might want to handle it gracefully
       if (response.status !== 404) {
-        handleError(errorData);
+        handleError(errorMessage);
       }
       throw new Error(errorMessage);
     }
@@ -6250,7 +6170,7 @@ export const createPromptCall = async (accessToken: string, promptData: any) => 
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6278,7 +6198,7 @@ export const updatePromptCall = async (accessToken: string, promptId: string, pr
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6305,7 +6225,7 @@ export const deletePromptCall = async (accessToken: string, promptId: string) =>
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6338,7 +6258,7 @@ export const convertPromptFileToJson = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6429,7 +6349,7 @@ export const uiSpendLogDetailsCall = async (accessToken: string, logId: string, 
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6460,7 +6380,7 @@ export const getInternalUserSettings = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6548,7 +6468,7 @@ export const fetchDiscoverableMCPServers = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6582,7 +6502,7 @@ export const fetchMCPServers = async (accessToken: string, teamId?: string | nul
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6620,7 +6540,7 @@ export const fetchMCPServerHealth = async (accessToken: string, serverIds?: stri
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6651,7 +6571,7 @@ export const fetchMCPAccessGroups = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6711,7 +6631,7 @@ export const createMCPServer = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6740,7 +6660,7 @@ export const updateMCPServer = async (accessToken: string, formValues: Record<st
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -6766,7 +6686,7 @@ export const deleteMCPServer = async (accessToken: string, serverId: string) => 
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
   } catch (error) {
@@ -6788,7 +6708,7 @@ export const fetchMCPToolsets = async (accessToken: string): Promise<any[]> => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
     return await response.json();
@@ -6812,7 +6732,7 @@ export const createMCPToolset = async (accessToken: string, formValues: Record<s
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
     return await response.json();
@@ -6836,7 +6756,7 @@ export const updateMCPToolset = async (accessToken: string, formValues: Record<s
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
     return await response.json();
@@ -6859,7 +6779,7 @@ export const deleteMCPToolset = async (accessToken: string, toolsetId: string) =
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
   } catch (error) {
@@ -6882,7 +6802,7 @@ export const registerMCPServer = async (accessToken: string, formValues: Record<
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
     return response.json();
@@ -6905,7 +6825,7 @@ export const fetchMCPSubmissions = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
     return response.json();
@@ -6927,7 +6847,7 @@ export const approveMCPServer = async (accessToken: string, serverId: string) =>
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
     return response.json();
@@ -6951,7 +6871,7 @@ export const rejectMCPServer = async (accessToken: string, serverId: string, rev
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
     return response.json();
@@ -6978,7 +6898,7 @@ export const fetchSearchTools = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -7010,7 +6930,7 @@ export const createSearchTool = async (accessToken: string, formValues: Record<s
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -7042,7 +6962,7 @@ export const updateSearchTool = async (accessToken: string, searchToolId: string
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -7071,7 +6991,7 @@ export const deleteSearchTool = async (accessToken: string, searchToolId: string
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -7102,7 +7022,7 @@ export const fetchAvailableSearchProviders = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -7134,7 +7054,7 @@ export const testSearchToolConnection = async (accessToken: string, litellmParam
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -7148,46 +7068,33 @@ export const testSearchToolConnection = async (accessToken: string, litellmParam
 };
 
 export const listMCPTools = async (
-  accessToken: string, 
+  accessToken: string,
   serverId: string,
-  customHeaders?: Record<string, string>
+  customHeaders?: Record<string, string>,
 ) => {
+  // Construct base URL
+  let url = proxyBaseUrl
+    ? `${proxyBaseUrl}/mcp-rest/tools/list?server_id=${serverId}`
+    : `/mcp-rest/tools/list?server_id=${serverId}`;
+
+  console.log("Fetching MCP tools from:", url);
+
+  const headers: Record<string, string> = {
+    [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+    ...customHeaders, // Merge custom headers for passthrough auth
+  };
+
+  let response: Response;
   try {
-    // Construct base URL
-    let url = proxyBaseUrl
-      ? `${proxyBaseUrl}/mcp-rest/tools/list?server_id=${serverId}`
-      : `/mcp-rest/tools/list?server_id=${serverId}`;
-
-    console.log("Fetching MCP tools from:", url);
-
-    const headers: Record<string, string> = {
-      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-      ...customHeaders, // Merge custom headers for passthrough auth
-    };
-
-    const response = await fetch(url, {
+    response = await fetch(url, {
       method: "GET",
       headers,
     });
-
-    const data = await response.json();
-    console.log("Fetched MCP tools response:", data);
-
-    if (!response.ok) {
-      // If the server returned an error response, use it
-      if (data.error && data.message) {
-        throw new Error(data.message);
-      }
-      // Otherwise use a generic error
-      throw new Error("Failed to fetch MCP tools");
-    }
-
-    // Return the full response object which includes tools, error, message, and stack_trace
-    return data;
   } catch (error) {
-    console.error("Failed to fetch MCP tools:", error);
-    // Return an error response in the same format as the API
+    // Network-level failure (no HTTP response). Preserve legacy shape so the
+    // caller can render a generic error message without crashing.
+    console.error("Failed to fetch MCP tools (network error):", error);
     return {
       tools: [],
       error: "network_error",
@@ -7195,6 +7102,44 @@ export const listMCPTools = async (
       stack_trace: null,
     };
   }
+
+  let data: any = null;
+  try {
+    data = await response.json();
+  } catch (parseError) {
+    console.error("Failed to parse MCP tools response:", parseError);
+    return {
+      tools: [],
+      error: "parse_error",
+      message: "Failed to parse MCP tools response",
+      status: response.status,
+      statusText: response.statusText,
+      stack_trace: null,
+    };
+  }
+  console.log("Fetched MCP tools response:", data);
+
+  if (!response.ok) {
+    // Preserve the legacy "never throws" contract so existing callers
+    // (e.g. MCPToolPermissions, MCPAppsPanel, MCPConnectPicker) can continue
+    // to inspect `result.error` / `result.message`. Attach `status` so
+    // callers that need to react to auth failures (e.g. the useQuery in
+    // mcp_tools.tsx) can still detect 401s from the returned object.
+    const errorMessage =
+      (data && (data.message || data.error)) || "Failed to fetch MCP tools";
+    return {
+      tools: [],
+      error: (data && data.error) || `http_${response.status}`,
+      message: errorMessage,
+      status: response.status,
+      statusText: response.statusText,
+      details: data,
+      stack_trace: null,
+    };
+  }
+
+  // Return the full response object which includes tools, error, message, and stack_trace
+  return data;
 };
 
 interface CallMCPToolOptions {
@@ -7239,14 +7184,13 @@ export const callMCPTool = async (
     if (!response.ok) {
       let errorMessage = "Network response was not ok";
       let errorDetails = null;
-      let errorData: any = null;
 
       // First, try to get the response as text to see what we're dealing with
       const responseText = await response.text();
 
       try {
         // Try to parse as JSON
-        errorData = JSON.parse(responseText);
+        const errorData = JSON.parse(responseText);
 
         if (errorData.detail) {
           if (typeof errorData.detail === "string") {
@@ -7272,9 +7216,7 @@ export const callMCPTool = async (
       (enhancedError as any).statusText = response.statusText;
       (enhancedError as any).details = errorDetails;
 
-      // Pass the parsed object when JSON parsing succeeded so handleError can
-      // dispatch on `error.type` (D1 taxonomy); fall back to raw text otherwise.
-      handleError(errorData ?? responseText);
+      handleError(errorMessage);
       throw enhancedError;
     }
 
@@ -7371,9 +7313,28 @@ export const tagInfoCall = async (accessToken: string, tagNames: string[]): Prom
   }
 };
 
-export const tagListCall = async (accessToken: string): Promise<TagListResponse> => {
+const formatYmd = (value: Date): string => {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+export const tagListCall = async (
+  accessToken: string,
+  startTime?: Date | null,
+  endTime?: Date | null,
+): Promise<TagListResponse> => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/tag/list` : `/tag/list`;
+
+    if (startTime && endTime) {
+      const params = new URLSearchParams({
+        start_date: formatYmd(startTime),
+        end_date: formatYmd(endTime),
+      });
+      url = `${url}?${params.toString()}`;
+    }
 
     const response = await fetch(url, {
       method: "GET",
@@ -7440,7 +7401,7 @@ export const getDefaultTeamSettings = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -7472,7 +7433,7 @@ export const updateDefaultTeamSettings = async (accessToken: string, settings: R
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -7533,7 +7494,7 @@ export const teamPermissionsUpdateCall = async (accessToken: string, teamId: str
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -7566,7 +7527,7 @@ export const sessionSpendLogsCall = async (accessToken: string, session_id: stri
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -8437,7 +8398,7 @@ export const getSSOSettings = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -8475,7 +8436,7 @@ export const updateSSOSettings = async (accessToken: string, settings: Record<st
       const errorMessage =
         typeof detailMessage === "string" && detailMessage.length > 0 ? detailMessage : deriveErrorMessage(errorData);
 
-      handleError(errorData);
+      handleError(errorMessage);
 
       const enhancedError = new Error(errorMessage);
       if (errorData?.detail !== undefined) {
@@ -8546,7 +8507,7 @@ export const uiAuditLogsCall = async ({
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -8659,7 +8620,7 @@ export const updatePassThroughEndpoint = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -8693,7 +8654,7 @@ export const deleteCallback = async (accessToken: string, callbackName: string) 
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -8864,6 +8825,7 @@ interface ExchangeMcpOAuthTokenParams {
   clientSecret?: string;
   codeVerifier: string;
   redirectUri: string;
+  accessToken?: string | null;
 }
 
 export const exchangeMcpOAuthToken = async ({
@@ -8873,6 +8835,7 @@ export const exchangeMcpOAuthToken = async ({
   clientSecret,
   codeVerifier,
   redirectUri,
+  accessToken,
 }: ExchangeMcpOAuthTokenParams) => {
   const base = getProxyBaseUrl();
   const normalizedServerId = encodeURIComponent(serverId.trim());
@@ -8890,11 +8853,16 @@ export const exchangeMcpOAuthToken = async ({
   body.set("code_verifier", codeVerifier);
   body.set("redirect_uri", redirectUri);
 
+  const headers: Record<string, string> = {
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+  if (accessToken) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
+    headers,
     body: body.toString(),
   });
 
@@ -9017,7 +8985,7 @@ export const tagDauCall = async (accessToken: string, endDate: Date, tagFilter?:
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9073,7 +9041,7 @@ export const tagWauCall = async (accessToken: string, endDate: Date, tagFilter?:
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9129,7 +9097,7 @@ export const tagMauCall = async (accessToken: string, endDate: Date, tagFilter?:
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9159,7 +9127,7 @@ export const tagDistinctCall = async (accessToken: string) => {
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9219,7 +9187,7 @@ export const userAgentSummaryCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9271,7 +9239,7 @@ export const perUserAnalyticsCall = async (
     if (!response.ok) {
       const errorData = await response.json();
       const errorMessage = deriveErrorMessage(errorData);
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9452,7 +9420,7 @@ export const getClaudeCodeMarketplace = async () => {
     if (!response.ok) {
       const errorData = await response.text();
       const errorMessage = deriveErrorMessage(JSON.parse(errorData));
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9487,7 +9455,7 @@ export const getClaudeCodePluginsList = async (accessToken: string, enabledOnly:
     if (!response.ok) {
       const errorData = await response.text();
       const errorMessage = deriveErrorMessage(JSON.parse(errorData));
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9522,7 +9490,7 @@ export const getClaudeCodePluginDetails = async (accessToken: string, pluginName
     if (!response.ok) {
       const errorData = await response.text();
       const errorMessage = deriveErrorMessage(JSON.parse(errorData));
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9568,7 +9536,7 @@ export const registerClaudeCodePlugin = async (
     if (!response.ok) {
       const errorData = await response.text();
       const errorMessage = deriveErrorMessage(JSON.parse(errorData));
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9603,7 +9571,7 @@ export const enableClaudeCodePlugin = async (accessToken: string, pluginName: st
     if (!response.ok) {
       const errorData = await response.text();
       const errorMessage = deriveErrorMessage(JSON.parse(errorData));
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9638,7 +9606,7 @@ export const disableClaudeCodePlugin = async (accessToken: string, pluginName: s
     if (!response.ok) {
       const errorData = await response.text();
       const errorMessage = deriveErrorMessage(JSON.parse(errorData));
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -9673,7 +9641,7 @@ export const deleteClaudeCodePlugin = async (accessToken: string, pluginName: st
     if (!response.ok) {
       const errorData = await response.text();
       const errorMessage = deriveErrorMessage(JSON.parse(errorData));
-      handleError(errorData);
+      handleError(errorMessage);
       throw new Error(errorMessage);
     }
 
@@ -10068,4 +10036,148 @@ export const listMCPUserCredentials = async (
   });
   if (!response.ok) return [];
   return response.json();
+};
+
+// ============================================================
+// Memory management (/v1/memory)
+// ============================================================
+
+/**
+ * Encode a memory key for use in a URL path segment.
+ *
+ * The backend route is declared as `/v1/memory/{key:path}`, which supports
+ * slashes in the key (e.g. `user/123/notes`). Plain `encodeURIComponent`
+ * encodes `/` as `%2F`, and some proxies/middlewares (nginx default,
+ * CloudFlare, AWS ALB) either reject or silently re-decode `%2F`, which
+ * can break the request before FastAPI ever sees it.
+ *
+ * We keep slashes literal as path delimiters while still encoding every
+ * other potentially-unsafe character (spaces, `?`, `#`, `%`, etc.) per
+ * path segment.
+ */
+const encodeMemoryKeyForPath = (key: string): string =>
+  key.split("/").map(encodeURIComponent).join("/");
+
+export interface MemoryRow {
+  memory_id: string;
+  key: string;
+  value: string;
+  metadata?: unknown;
+  user_id?: string | null;
+  team_id?: string | null;
+  created_at?: string;
+  created_by?: string | null;
+  updated_at?: string;
+  updated_by?: string | null;
+}
+
+export interface MemoryListResponse {
+  memories: MemoryRow[];
+  total: number;
+}
+
+export const fetchMemoryList = async (
+  accessToken: string,
+  options: {
+    key?: string;
+    keyPrefix?: string;
+    page?: number;
+    pageSize?: number;
+  } = {},
+): Promise<MemoryListResponse> => {
+  const base = proxyBaseUrl ? `${proxyBaseUrl}/v1/memory` : `/v1/memory`;
+  const params = new URLSearchParams();
+  // keyPrefix takes precedence — backend also does, but we omit `key`
+  // to keep the URL clean and intent obvious.
+  if (options.keyPrefix) {
+    params.append("key_prefix", options.keyPrefix);
+  } else if (options.key) {
+    params.append("key", options.key);
+  }
+  if (options.page != null) params.append("page", String(options.page));
+  if (options.pageSize != null)
+    params.append("page_size", String(options.pageSize));
+  const url = params.toString() ? `${base}?${params.toString()}` : base;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+  });
+  if (!response.ok) {
+    const errorData = await response.text();
+    throw new Error(errorData);
+  }
+  return response.json();
+};
+
+export const createMemory = async (
+  accessToken: string,
+  payload: { key: string; value: string; metadata?: unknown },
+): Promise<MemoryRow> => {
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/memory` : `/v1/memory`;
+  const body: Record<string, unknown> = {
+    key: payload.key,
+    value: payload.value,
+  };
+  if (payload.metadata !== undefined) body.metadata = payload.metadata;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const errorData = await response.text();
+    throw new Error(errorData);
+  }
+  return response.json();
+};
+
+export const updateMemory = async (
+  accessToken: string,
+  key: string,
+  payload: { value?: string; metadata?: unknown },
+): Promise<MemoryRow> => {
+  const encoded = encodeMemoryKeyForPath(key);
+  const url = proxyBaseUrl
+    ? `${proxyBaseUrl}/v1/memory/${encoded}`
+    : `/v1/memory/${encoded}`;
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: {
+      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorData = await response.text();
+    throw new Error(errorData);
+  }
+  return response.json();
+};
+
+export const deleteMemory = async (
+  accessToken: string,
+  key: string,
+): Promise<void> => {
+  const encoded = encodeMemoryKeyForPath(key);
+  const url = proxyBaseUrl
+    ? `${proxyBaseUrl}/v1/memory/${encoded}`
+    : `/v1/memory/${encoded}`;
+  const response = await fetch(url, {
+    method: "DELETE",
+    headers: {
+      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+  });
+  if (!response.ok) {
+    const errorData = await response.text();
+    throw new Error(errorData);
+  }
 };
