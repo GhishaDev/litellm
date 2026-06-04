@@ -631,24 +631,18 @@ class AmazonAnthropicClaudeMessagesConfig(
         if "tool-search-tool-2025-10-19" in beta_set:
             beta_set.add("tool-examples-2025-10-29")
 
-<<<<<<< HEAD
-        filtered_betas = sorted(
-            filter_and_transform_beta_headers(
-                beta_headers=list(beta_set),
-                provider="bedrock",
-            )
-=======
         # litellm_params here is a GenericLiteLLMParams instance (Pydantic).
         # Other call paths pass a plain dict, so handle both shapes.
         if isinstance(litellm_params, dict):
             _overrides = litellm_params.get("anthropic_beta_overrides")
         else:
             _overrides = getattr(litellm_params, "anthropic_beta_overrides", None)
-        filtered_auto_betas = filter_and_transform_beta_headers(
-            beta_headers=list(beta_set - user_beta_set),
-            provider="bedrock",
-            overrides=_overrides,
->>>>>>> 99f6ff1de0 (feat(anthropic): add per-deployment anthropic_beta_overrides config (#33))
+        filtered_betas = sorted(
+            filter_and_transform_beta_headers(
+                beta_headers=list(beta_set),
+                provider="bedrock",
+                overrides=_overrides,
+            )
         )
 
         dropped_user_betas = sorted(
