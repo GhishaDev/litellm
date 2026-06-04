@@ -78,19 +78,24 @@ class TestTokenDetailMetricsRegistration:
             ), f"{name} missing from PrometheusMetricLabels"
 
     def test_input_detail_metrics_share_input_label_set(self):
-        # Detail metrics should reuse the parent input/output label set so
-        # dashboards can join token totals against per-type detail.
+        # Detail metrics reuse the parent input label set so dashboards can
+        # join token totals against per-type detail.
+        #
+        # Exception: `litellm_input_cache_creation_tokens_metric` extends the
+        # input label set with `cache_ttl` (Anthropic 5m vs 1h ephemeral
+        # cache; billing differs 2x). Internal-fork addition per
+        # Wave 5a of the v1.87.0 bump — see CLAUDE.md → "Current pinning".
         assert (
             PrometheusMetricLabels.litellm_input_cached_tokens_metric
             == PrometheusMetricLabels.litellm_input_tokens_metric
         )
         assert (
-            PrometheusMetricLabels.litellm_input_cache_creation_tokens_metric
-            == PrometheusMetricLabels.litellm_input_tokens_metric
-        )
-        assert (
             PrometheusMetricLabels.litellm_input_audio_tokens_metric
             == PrometheusMetricLabels.litellm_input_tokens_metric
+        )
+        # cache_creation_tokens_metric = input_tokens_metric + ['cache_ttl']
+        assert PrometheusMetricLabels.litellm_input_cache_creation_tokens_metric == (
+            PrometheusMetricLabels.litellm_input_tokens_metric + ["cache_ttl"]
         )
 
     def test_output_detail_metrics_share_output_label_set(self):
@@ -137,9 +142,13 @@ class TestIncrementTokenDetailMetrics:
         logger.litellm_input_cached_tokens_metric.labels().inc.assert_called_once_with(
             40.0
         )
-        logger.litellm_input_cache_creation_tokens_metric.labels().inc.assert_called_once_with(
-            25.0
-        )
+        # cache_creation_tokens is emitted by `_increment_prompt_cache_token_metrics`
+        # (with cache_ttl label), not by `_increment_token_detail_metrics`.
+        # Internal-fork carve-out per Wave 5a of the v1.87.0 bump — kept
+        # out of the generic detail loop to preserve the 5m/1h split that
+        # Anthropic bills 2x apart. Coverage lives in
+        # tests/test_litellm/integrations/test_prometheus_prompt_cache_token_metrics.py.
+        logger.litellm_input_cache_creation_tokens_metric.labels.assert_not_called()
         logger.litellm_input_audio_tokens_metric.labels().inc.assert_called_once_with(
             15.0
         )

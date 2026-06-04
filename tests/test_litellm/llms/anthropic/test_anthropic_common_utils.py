@@ -1345,18 +1345,32 @@ class TestAnthropicThinkingSignatureSelfHeal:
         )
         resp = httpx.Response(400, request=req, text=err_text)
         err = httpx.HTTPStatusError("bad", request=req, response=resp)
-        assert config.should_retry_anthropic_messages_on_http_error(err, {}) is True
+
+        # Wave 6d of the v1.87.0 bump made the thinking-signature retry
+        # opt-in (default off) — an invalid signature usually signals a
+        # routing / key-rotation problem and stripping thinking blocks
+        # would hide that. Without the opt-in flag the retry is skipped.
+        assert config.should_retry_anthropic_messages_on_http_error(err, {}) is False
+        # Opt in via litellm_params and the retry condition matches again.
+        opt_in = {"strip_thinking_on_signature_error": True}
+        assert (
+            config.should_retry_anthropic_messages_on_http_error(err, opt_in) is True
+        )
 
         resp_bad = httpx.Response(400, request=req, text="rate limit exceeded")
         err_bad = httpx.HTTPStatusError("bad", request=req, response=resp_bad)
+        # Even with opt-in, non-thinking-signature 400s don't trigger retry.
         assert (
-            config.should_retry_anthropic_messages_on_http_error(err_bad, {}) is False
+            config.should_retry_anthropic_messages_on_http_error(err_bad, opt_in)
+            is False
         )
 
         resp_500 = httpx.Response(500, request=req, text=err_text)
         err_500 = httpx.HTTPStatusError("bad", request=req, response=resp_500)
+        # 5xx never retries via this path — only 400 + thinking-signature.
         assert (
-            config.should_retry_anthropic_messages_on_http_error(err_500, {}) is False
+            config.should_retry_anthropic_messages_on_http_error(err_500, opt_in)
+            is False
         )
 
         data = {
