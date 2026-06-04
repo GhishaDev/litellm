@@ -148,7 +148,7 @@ const Navbar: React.FC<NavbarProps> = ({
                         rel="noopener noreferrer"
                         className="flex-shrink-0"
                       >
-                        v{version}
+                        {version}
                       </a>
                     </Tag>
                   </Tooltip>
