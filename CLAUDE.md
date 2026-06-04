@@ -1,214 +1,406 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working in this repo.
+This is an internal fork of `BerriAI/litellm` pinned to a specific
+upstream `vX.Y.Z-stable` tag, with internal fixes layered on top.
+See **Current pinning** below for the active pin and branch names.
 
-## Documentation
+## Current pinning
 
-Documentation lives in a separate repository: [BerriAI/litellm-docs](https://github.com/BerriAI/litellm-docs). It is served at [docs.litellm.ai](https://docs.litellm.ai). Do not create or edit documentation files in this repository — open doc PRs against `BerriAI/litellm-docs` instead.
+This fork pins to one upstream `vX.Y.Z-stable` tag at a time and lives
+in a parallel set of branches named after that pin. Today:
 
-## Development Commands
+- **Upstream pin**: `v1.87.0`
+- **Ship branch**: `ship/v1.87.0`
+- **Upstream-sync branch**: `internal/v1.87.0-stable`
+- **Internal release tag pattern**: `v1.87.0-internal.N`
+- **Latest release**: see `git tag -l 'v1.87.0-internal.*' --sort=-v:refname | head -1`
 
-### Installation
-- `make install-dev` - Install core development dependencies
-- `make install-proxy-dev` - Install proxy development dependencies with full feature set
-- `make install-test-deps` - Install the full local test environment and generate the Prisma client
+When the pin changes (version bump), update **this block** and the
+Branching strategy table below. Every other reference in this file uses
+"the ship branch" / "the upstream-sync branch" generically.
 
-### Testing
-- `make test` - Run all tests
-- `make test-unit` - Run unit tests (tests/test_litellm) with 4 parallel workers
-- `make test-integration` - Run integration tests (excludes unit tests)
-- `pytest tests/` - Direct pytest execution
+## Hot path — read this before doing anything
 
-### Code Quality
-- `make lint` - Run all linting (Ruff, MyPy, Black, circular imports, import safety)
-- `make format` - Apply Black code formatting
-- `make lint-ruff` - Run Ruff linting only
-- `make lint-mypy` - Run MyPy type checking only
-- **Before committing, always run `uv run black .` to format your code.** Black formatting is enforced in CI.
+- Before writing an internal fix, check **Fork tier classification**.
+  Tier C/D fixes default to upstream PRs first; only carry on the ship
+  branch if upstream rejects or scheduling demands it.
+- Every fix PR targets **the ship branch** (see Current pinning), not
+  the upstream-sync branch (has 1700+ upstream-sync commits) and not
+  `litellm_internal_staging` (pure upstream tracker).
+- Run `uv run black .` before committing — CI enforces.
+- Full-stack scenarios (DB schema, background jobs, real HTTP) go under
+  `e2e/cases/NN_*.md`, not into bespoke `tests/` integration files.
+- Proxy DB access uses Prisma model methods (`prisma_client.db.<model>`)
+  only — no raw SQL.
+- `LLMClientCache._remove_key()` must never close HTTP/SDK clients;
+  in-flight requests still hold them.
 
-### Single Test Files
-- `uv run pytest tests/path/to/test_file.py -v` - Run specific test file
-- `uv run pytest tests/path/to/test_file.py::test_function -v` - Run specific test
+## Agent constraints (this fork)
 
-### Running Scripts
-- `uv run python script.py` - Run Python scripts (use for non-test files)
+Do not take these actions autonomously without explicit instruction:
 
-### GitHub Issue & PR Templates
-When contributing to the project, use the appropriate templates:
+- Push to the ship branch, the upstream-sync branch, or any tag.
+  Always work via a `fix/*` branch + PR.
+- Run `scripts/release-tag.sh`. It has an interactive `[y/N]` prompt
+  meant for the human releaser — suggest `! scripts/release-tag.sh v...`
+  so they own the confirmation.
+- Edit files under `litellm/proxy/_experimental/out/`. Those are
+  upstream Next.js build artifacts; ignore the `git status` noise there.
+- Skip pre-commit hooks (`--no-verify`), bypass signing, or amend an
+  already-pushed commit.
 
-**Bug Reports** (`.github/ISSUE_TEMPLATE/bug_report.yml`):
-- Describe what happened vs. what you expected
-- Include relevant log output
-- Specify your LiteLLM version
+## Fork tier classification
 
-**Feature Requests** (`.github/ISSUE_TEMPLATE/feature_request.yml`):
-- Describe the feature clearly
-- Explain the motivation and use case
+Every change to this repo belongs to one of four tiers. The tier
+dictates where the change lives and whether to push it upstream.
 
-**Pull Requests** (`.github/pull_request_template.md`):
-- Add at least 1 test in `tests/litellm/`
-- Ensure `make test-unit` passes
+| Tier | Description | Typical location | Upstream policy |
+|---|---|---|---|
+| **A** | Truly company-specific logic | `litellm_extras/` | Never push upstream |
+| **B** | Internal infra / branding | `.github/workflows.*`, `Dockerfile`, `e2e/`, internal navbar version | Never push upstream |
+| **C** | Universal bug fix | Touches `litellm/` core | **Default: submit PR to BerriAI/litellm.** Only carry on the ship branch if upstream rejects or scheduling demands it |
+| **D** | Universal mechanism + company opinion | Touches `litellm/` core | **Default: submit upstream as a hook/config + carry our policy locally.** Make the mechanism configurable so upstream accepts it |
 
-### Branching strategy (internal fork)
+Every PR description must declare `Tier: A/B/C/D`. For Tier C and D,
+PRs must also answer "Tried upstream first? (link or justification)".
+This keeps the fork's universal-bug-fix delta as small as possible so
+future version bumps stay cheap.
 
-This fork pins to the upstream `v1.83.10-stable` tag and ships internal
-fixes on top of it.
+The PR template (`.github/pull_request_template.md`) enforces this with
+a checkbox section.
 
-**Branches:**
+## Upstream sync cadence
 
-| Branch | Purpose | Stays clean? |
-|---|---|---|
-| `v1.83.10-stable` (tag) | Immutable upstream pin | yes — never moves |
-| `ship/v1.83.10` | Long-term ship branch — starts at the tag, only advances via merges of internal `fix/*` PRs | yes |
-| `internal/v1.83.10-stable` | Upstream-sync working branch — may collect upstream commits via teammate / CI sync | **no** — can have hundreds of upstream commits |
-| `litellm_internal_staging` | Pure upstream tracker for `BerriAI/litellm` | tracks upstream |
-| `fix/<short-description>` | Per-bug feature branch | yes — merged into `ship/v1.83.10` via PR merge commit |
+The pinned upstream minor line keeps receiving patch releases after
+we pin (e.g. `v1.87.1`, `v1.87.2`; or `v1.83.10-stable.patch.1` under
+the older convention). Upstream `main` moves daily via nightly tags.
+Without a sync cadence, every version bump becomes a multi-week
+project. The schedule below keeps drift bounded.
 
-**PR target:** every internal fix PR **must target `ship/v1.83.10`**, not
-`internal/v1.83.10-stable` (which has 1700+ upstream-sync commits on top
-of the tag) and not `litellm_internal_staging` (pure upstream).
+**Monthly** (first Monday):
+
+- Run `scripts/upstream-sync-check.sh` to list missed patches on the
+  pinned line, newer minor lines, `upstream/main` commit volume, and
+  security-flagged subjects since our pin.
+- Triage security fixes (filter for `[SECURITY]`, `fix(auth)`, CVE
+  labels). Open `fix/*` PRs for each must-backport item.
+- 30-minute review with one other engineer.
+
+**Quarterly**:
+
+- Evaluate whether to bump to a newer stable line (e.g. 1.87.x → 1.88.x).
+  See "Cutting an internal release" and any version-bump runbook in
+  `e2e/cases/` or `docs/`.
+- Re-classify the carried ship-branch delta — any Tier C/D fix that
+  has been upstreamed by someone else? Drop it.
+
+**Never**:
+
+- Sit on a pinned tag for more than 6 months without an explicit
+  sustainability discussion. Beyond 12 months, the fork begins to
+  permanently diverge.
+
+## Development workflow
 
 ```bash
-# Default new fix branch from the latest ship state
-git checkout -b fix/<name> ship/v1.83.10
+# Install
+make install-dev          # core dev deps
+make install-proxy-dev    # proxy with full feature set
+make install-test-deps    # full local test env + Prisma client
 
-# Open PR
-gh pr create --base ship/v1.83.10 --head fix/<name>
+# Run tests
+make test-unit            # tests/test_litellm with 4 workers
+make test-integration     # everything except unit
+uv run pytest tests/path/to/test_file.py -v
+uv run pytest tests/path/to/test_file.py::test_function -v
+
+# Lint / format
+make lint                 # Ruff + MyPy + Black + circular-import + import-safety
+make format               # Black only
+uv run black .            # MANDATORY before commit
+uv run python script.py   # for non-test scripts
 ```
 
-**Conflicts:** `ship/v1.83.10` only moves when a `fix/*` PR merges, so it
-stays exactly TAG + (merged fixes). Fixes never have to rebase against
-moving upstream; the upstream-sync churn lives entirely on
-`internal/v1.83.10-stable`.
+## Branching strategy
 
-## Architecture Overview
+Branch names are derived from the current pin (see Current pinning).
+The examples below use the current pin `v1.87.0`. Older upstream pins
+(1.83.x and earlier) used a `vX.Y.Z-stable` tag form; upstream dropped
+that suffix starting with v1.84.0. Either form is accepted everywhere.
 
-LiteLLM is a unified interface for 100+ LLM providers with two main components:
+| Branch / tag | Purpose | Stays clean? |
+|---|---|---|
+| `<pin>` tag — e.g. `v1.87.0` (older: `v1.83.10-stable`) | Immutable upstream pin | yes — never moves |
+| `ship/<pin>` — e.g. `ship/v1.87.0` | Long-term ship — advances only via merged `fix/*` PRs | yes |
+| `internal/<pin>-stable` — e.g. `internal/v1.87.0-stable` | **Optional** bump-preview sandbox. Test-merge `upstream/main` here before a version bump to surface conflicts. Not required for routine sync — that's what `scripts/upstream-sync-check.sh` is for | no — accumulates upstream merges if used |
+| `litellm_internal_staging` | Pure upstream tracker for `BerriAI/litellm` | tracks upstream |
+| `fix/<name>` | Per-bug feature branch | yes — merged into the ship branch |
 
-### Core Library (`litellm/`)
-- **Main entry point**: `litellm/main.py` - Contains core completion() function
-- **Provider implementations**: `litellm/llms/` - Each provider has its own subdirectory
-- **Router system**: `litellm/router.py` + `litellm/router_utils/` - Load balancing and fallback logic
-- **Type definitions**: `litellm/types/` - Pydantic models and type hints
-- **Integrations**: `litellm/integrations/` - Third-party observability, caching, logging
-- **Caching**: `litellm/caching/` - Multiple cache backends (Redis, in-memory, S3, etc.)
+```bash
+SHIP=ship/v1.87.0   # see Current pinning for the active ship branch
+git checkout -b fix/<name> "$SHIP"
+gh pr create --base "$SHIP" --head fix/<name>
+```
 
-### Proxy Server (`litellm/proxy/`)
-- **Main server**: `proxy_server.py` - FastAPI application
-- **Authentication**: `auth/` - API key management, JWT, OAuth2
-- **Database**: `db/` - Prisma ORM with PostgreSQL/SQLite support
-- **Management endpoints**: `management_endpoints/` - Admin APIs for keys, teams, models
-- **Pass-through endpoints**: `pass_through_endpoints/` - Provider-specific API forwarding
-- **Guardrails**: `guardrails/` - Safety and content filtering hooks
-- **UI Dashboard**: Served from `_experimental/out/` (Next.js build)
+The ship branch only moves when a `fix/*` PR merges, so it stays
+exactly `TAG + merged fixes`. Fixes never have to rebase against moving
+upstream. Routine awareness of upstream drift comes from
+`scripts/upstream-sync-check.sh` (see Upstream sync cadence); the
+`internal/<pin>-stable` sandbox is opt-in — use it before a version
+bump, not as a continuous mirror.
 
-## Key Patterns
+## Cutting an internal release
 
-### Provider Implementation
-- Providers inherit from base classes in `litellm/llms/base.py`
-- Each provider has transformation functions for input/output formatting
-- Support both sync and async operations
-- Handle streaming responses and function calling
+Always use `scripts/release-tag.sh`. Never `git tag` by hand.
 
-### Error Handling
-- Provider-specific exceptions mapped to OpenAI-compatible errors
-- Fallback logic handled by Router system
-- Comprehensive logging through `litellm/_logging.py`
+```bash
+# After fix/* PR merged into the ship branch and local ship is up-to-date:
+scripts/release-tag.sh <pin>-internal.N   # e.g. v1.87.0-internal.1
+```
 
-### Configuration
-- YAML config files for proxy server (see `proxy/example_config_yaml/`)
-- Environment variables for API keys and settings
-- Database schema managed via Prisma (`proxy/schema.prisma`)
+Tag format is enforced: `^v[0-9]+\.[0-9]+\.[0-9]+-internal\.[0-9]+$`.
+`N` is monotonically increasing within a pin — don't reset, skip, or
+reuse. On a version bump, `N` restarts from 1 under the new pin. Find
+the current latest:
 
-## Development Notes
+```bash
+# See Current pinning for the active <pin> prefix
+git tag -l 'v1.87.0-internal.*' --sort=-v:refname | head -1
+```
 
-### Code Style
-- Uses Black formatter, Ruff linter, MyPy type checker
-- Pydantic v2 for data validation
-- Async/await patterns throughout
-- Type hints required for all public APIs
-- **Avoid imports within methods** — place all imports at the top of the file (module-level). Inline imports inside functions/methods make dependencies harder to trace and hurt readability. The only exception is avoiding circular imports where absolutely necessary.
-- **Use dict spread for immutable copies** — prefer `{**original, "key": new_value}` over `dict(obj)` + mutation. The spread produces the final dict in one step and makes intent clear.
-- **Guard at resolution time** — when resolving an optional value through a fallback chain (`a or b or ""`), raise immediately if the resolved result being empty is an error. Don't pass empty strings or sentinel values downstream for the callee to deal with.
-- **Extract complex comprehensions to named helpers** — a set/dict comprehension that calls into the DB or manager (e.g. "which of these server IDs are OAuth2?") belongs in a named helper function, not inline in the caller.
-- **FastAPI parameter declarations** — mark required query/form params with `= Query(...)` / `= Form(...)` explicitly when other params in the same handler are optional. Mixing `str` (required) with `Optional[str] = None` in the same signature causes silent 422s when the required param is missing.
+Pushing the tag triggers `.github/workflows/release-docker.yml` →
+multi-arch image published as:
+- `zsk2026/litellm:vX.Y.Z-internal.N`
+- `zsk2026/litellm:vX.Y.Z-stable` (rolling pointer to latest `internal.N`)
 
-### Testing Strategy
-- Unit tests in `tests/test_litellm/`
-- Integration tests for each provider in `tests/llm_translation/`
-- Proxy tests in `tests/proxy_unit_tests/`
-- Load tests in `tests/load_tests/`
-- **End-to-end tests in `e2e/` (root, not under `tests/`)** — Claude-driven runbook harness, not pytest. Cases live in `e2e/cases/NN_*.md`; tools in `e2e/tools/` (`proxy`, `keys`, `teams`, `metrics`, `call`, `run-all-cases`). Docker Compose brings up Postgres + a litellm container built from local source. **Whenever a fix needs full-stack verification (DB schema, background jobs, real HTTP flow), add a new case under `e2e/cases/` rather than spinning up bespoke integration infra under `tests/`.** Update the index in `e2e/cases/README.md`. See `e2e/README.md` for the harness contract.
-- **Always add tests when adding new entity types or features** — if the existing test file covers other entity types, add corresponding tests for the new one
-- **Keep monkeypatch stubs in sync with real signatures** — when a function gains a new optional parameter, update every `fake_*` / `stub_*` in tests that patch it to also accept that kwarg (even as `**kwargs`). Stale stubs fail with `unexpected keyword argument` and mask real bugs.
-- **Test all branches of name→ID resolution** — when adding server/resource lookup that resolves names to UUIDs, test: (1) name resolves and UUID is allowed, (2) name resolves but UUID is not allowed, (3) name does not resolve at all. The silent-fallback path is where access-control bugs hide.
+## Architecture notes
 
-### UI / Backend Consistency
-- When wiring a new UI entity type to an existing backend endpoint, verify the backend API contract (single value vs. array, required vs. optional params) and ensure the UI controls match — e.g., use a single-select dropdown when the backend accepts a single value, not a multi-select
+- Provider transformations live in `litellm/llms/<provider>/` and inherit
+  from `litellm/llms/base.py`. Adding a provider = new subdir + base
+  subclass + input/output transforms.
+- `Router` (`litellm/router.py`, sync-friendly) vs `proxy_server`
+  (`litellm/proxy/proxy_server.py`, async FastAPI) — never call sync
+  Router methods from async proxy code.
+- Internal code in this fork lives under `litellm_extras/` to keep
+  upstream `litellm/` untouched. Don't import `litellm_extras` from
+  inside `litellm/`.
+- UI is a Next.js build under `litellm/proxy/_experimental/out/` —
+  committed to git by upstream, occasionally changes format (`.html` ↔
+  `/index.html`). Add `litellm/proxy/_experimental/out/` to
+  `.git/info/exclude` locally to silence the noise.
 
-### UI Component Library
-- **Always use `antd` for new UI components** — we are migrating off of `@tremor/react`. Do not introduce new `Badge`, `Text`, `Card`, `Grid`, `Title`, or other imports from `@tremor/react` in any new or modified file. Use `antd` equivalents: `Tag` for labels, `Typography.Text` / `Typography.Title` / `Typography.Paragraph` for textual content (avoid plain text-only `<span>`, `<p>`, `<h*>` when Typography fits), and `Card` from `antd`. Note that `antd` has no `"yellow"` Tag color — use `"gold"` for amber/yellow.
+## Code style
 
-### MCP OAuth / OpenAPI Transport Mapping
-- **`available_on_public_internet: false` with `delegate_auth_to_upstream: true` (oauth2, interactive — not `client_credentials`)** — LiteLLM still allows the anonymous upstream PKCE path (no proxy API key for `/authorize` and matching MCP routes). The internal-only flag mainly affects other surfaces (e.g. IP-based discovery). Rely on the upstream IdP and network policy; the dashboard shows a warning when both are set, and the proxy logs a warning when the server is loaded from config or the database.
-- `TRANSPORT.OPENAPI` is a UI-only concept. The backend only accepts `"http"`, `"sse"`, or `"stdio"`. Always map it to `"http"` before any API call (including pre-OAuth temp-session calls).
-- FastAPI validation errors return `detail` as an array of `{loc, msg, type}` objects. Error extractors must handle: array (map `.msg`), string, nested `{error: string}`, and fallback.
-- When an MCP server already has `authorization_url` stored, skip OAuth discovery (`_discovery_metadata`) — the server URL for OpenAPI MCPs is the spec file, not the API base, and fetching it causes timeouts.
-- `client_id` should be optional in the `/authorize` endpoint — if the server has a stored `client_id` in credentials, use that. Never require callers to re-supply it.
+- Black formatter, Ruff linter, MyPy type checker.
+- Pydantic v2 for data validation; type hints required on public APIs.
+- **Avoid imports within methods** — module-level imports only. Inline
+  imports hide dependencies and break static analysis. Only exception:
+  breaking a circular import where unavoidable.
+- Prefer `{**original, "key": new_value}` over `dict(obj)` + mutation.
+- Guard at resolution time: when resolving an optional via fallback
+  chain (`a or b or ""`), raise immediately if the resolved result
+  being empty is an error. Don't pass empty strings or sentinels
+  downstream.
+- Extract complex comprehensions that call into the DB/manager into a
+  named helper — don't inline them.
+- FastAPI handlers mixing required and optional params: mark required
+  ones with `= Query(...)` / `= Form(...)` explicitly. Otherwise you'll
+  get silent 422s when the required param is missing.
 
-### MCP Credential Storage
-- OAuth credentials and BYOK credentials share the `litellm_mcpusercredentials` table, distinguished by a `"type"` field in the JSON payload (`"oauth2"` vs plain string).
-- When deleting OAuth credentials, check type before deleting to avoid accidentally deleting a BYOK credential for the same `(user_id, server_id)` pair.
-- Always pass the raw `expires_at` timestamp to the client — never set it to `None` for expired credentials. Let the frontend compute the "Expired" display state from the timestamp.
-- Use `RecordNotFoundError` (not bare `except Exception`) when catching "already deleted" in credential delete endpoints.
+## Test discipline
 
-### Browser Storage Safety (UI)
-- Never write LiteLLM access tokens or API keys to `localStorage` — use `sessionStorage` only. `localStorage` survives browser close and is readable by any injected script (XSS).
-- Shared utility functions (e.g. `extractErrorMessage`) belong in `src/utils/` — never define them inline in hooks or duplicate them across files.
+Tests live in `tests/test_litellm/` (unit), `tests/llm_translation/`
+(per-provider integration), `tests/proxy_unit_tests/` (proxy), and
+`tests/load_tests/`. Full-stack scenarios go in `e2e/cases/`.
 
-### Database Migrations
-- Prisma handles schema migrations
-- Migration files auto-generated with `prisma migrate dev`
-- Always test migrations against both PostgreSQL and SQLite
+- **Write assertions from the spec, not the impl.** For new features,
+  the `e2e/cases/NN_*.md` runbook IS the spec — write it before the
+  fixture and the impl. For bug fixes, the issue's repro steps are the
+  spec. Tests reverse-engineered from controller code can never expose
+  a doc-vs-impl gap because they were generated from the gap.
+- **Lock known doc-vs-impl gaps with `pytest.mark.xfail(strict=True)`**,
+  never `pytest.mark.skip` or a `TODO` comment. Skipped tests vanish
+  from CI signal and rot. `xfail(strict=True)` keeps the gap visible
+  AND flips to a build failure (XPASS) the moment the impl catches up,
+  forcing cleanup. Include a `reason=` that points at the upstream
+  issue or internal ticket. Pair with a plain `test_*_current_behavior`
+  that pins the wrong-but-current behavior so drift surfaces too:
+  ```python
+  def test_x_current_behavior():
+      assert actual == BUGGY_VALUE  # codifies the bug
 
-### Proxy database access
-- **Do not write raw SQL** for proxy DB operations. Use Prisma model methods instead of `execute_raw` / `query_raw`.
-- Use the generated client: `prisma_client.db.<model>` (e.g. `litellm_tooltable`, `litellm_usertable`) with `.upsert()`, `.find_many()`, `.find_unique()`, `.update()`, `.update_many()` as appropriate. This avoids schema/client drift, keeps code testable with simple mocks, and matches patterns used in spend logs and other proxy code.
-- **No N+1 queries.** Never query the DB inside a loop. Batch-fetch with `{"in": ids}` and distribute in-memory.
-- **Batch writes.** Use `create_many`/`update_many`/`delete_many` instead of individual calls (these return counts only; `update_many`/`delete_many` no-op silently on missing rows). When multiple separate writes target the same table (e.g. in `batch_()`), order by primary key to avoid deadlocks.
-- **Push work to the DB.** Filter, sort, group, and aggregate in SQL, not Python. Verify Prisma generates the expected SQL — e.g. prefer `group_by` over `find_many(distinct=...)` which does client-side processing.
-- **Bound large result sets.** Prisma materializes full results in memory. For results over ~10 MB, paginate with `take`/`skip` or `cursor`/`take`, always with an explicit `order`. Prefer cursor-based pagination (`skip` is O(n)). Don't paginate naturally small result sets.
-- **Limit fetched columns on wide tables.** Use `select` to fetch only needed fields — returns a partial object, so downstream code must not access unselected fields.
-- **Check index coverage.** For new or modified queries, check `schema.prisma` for a supporting index. Prefer extending an existing index (e.g. `@@index([a])` → `@@index([a, b])`) over adding a new one, unless it's a `@@unique`. Only add indexes for large/frequent queries.
-- **Keep schema files in sync.** Apply schema changes to all `schema.prisma` copies (`schema.prisma`, `litellm/proxy/`, `litellm-proxy-extras/`) with a migration under `litellm-proxy-extras/litellm_proxy_extras/migrations/`.
+  @pytest.mark.xfail(strict=True, reason="BerriAI/litellm#NNNNN")
+  def test_x_correct_behavior():
+      assert actual == EXPECTED_VALUE  # flips XPASS when impl catches up
+  ```
+- **"Test exposed a bug" ≠ "bug is fixed".** Adding a failing test (or
+  a strict-xfail) documents a gap; it does not close one. Fix the impl
+  in the same PR, or call out the deferral in the PR summary
+  ("exposes #N, fix deferred to #M").
+- Keep monkeypatch stubs in sync with real signatures. When a function
+  gains a new optional param, update every `fake_*` / `stub_*` to accept
+  it (even as `**kwargs`). Stale stubs fail with `unexpected keyword
+  argument` and mask real bugs.
+- Test all branches of name→ID resolution: (1) name resolves and UUID
+  allowed, (2) name resolves but UUID not allowed, (3) name doesn't
+  resolve. The silent-fallback path is where access-control bugs hide.
+- Always add tests when introducing a new entity type — if existing
+  test files cover other entity types, add corresponding cases.
 
-### Setup Wizard (`litellm/setup_wizard.py`)
-- The wizard is implemented as a single `SetupWizard` class with `@staticmethod` methods — keep it that way. No module-level functions except `run_setup_wizard()` (the public entrypoint) and pure helpers (color, ANSI).
-- Use `litellm.utils.check_valid_key(model, api_key)` for credential validation — never roll a custom completion call.
-- Do not hardcode provider env-key names or model lists that already exist in the codebase. Add a `test_model` field to each provider entry to drive `check_valid_key`; set it to `None` for providers that can't be validated with a single API key (Azure, Bedrock, Ollama).
+## Proxy database access
 
-### Enterprise Features
-- Enterprise-specific code in `enterprise/` directory
-- Optional features enabled via environment variables
-- Separate licensing and authentication for enterprise features
+Use Prisma model methods. **Never raw SQL** (`execute_raw`/`query_raw`).
 
-### CI Supply-Chain Safety
-- **Never pipe a remote script into a shell** (`curl ... | bash`, `wget ... | sh`). Download the artifact to a file, verify its SHA-256 checksum, then install.
-- **Pin every external tool to a specific version** with a full URL (not `latest` or `stable`). Unversioned downloads silently change under you.
-- **Verify checksums for all downloaded binaries.** Use the provider's official `.sha256` / `.sha256sum` sidecar file when available; otherwise compute and hardcode the digest.
-- **Prefer reusable CircleCI commands** (`commands:` section) so a tool is installed and verified in exactly one place, then referenced everywhere with `- install_<tool>` or `- wait_for_service`.
-- **Don't add tools just because they were there before.** Audit whether an external dependency is still needed. If it can be replaced with a shell one-liner or a tool already in the image, remove it.
-- These rules apply to every download in CI: binaries, install scripts, language version managers, package repos. No exceptions.
+- Client: `prisma_client.db.<model>` with `.upsert`/`.find_many`/
+  `.find_unique`/`.update`/`.update_many`.
+- **No N+1 queries.** Batch-fetch with `{"in": ids}` and distribute
+  in-memory.
+- Batch writes via `create_many`/`update_many`/`delete_many` (these
+  return counts only; `update_many`/`delete_many` no-op silently on
+  missing rows). Multiple writes to the same table in `batch_()` →
+  order by primary key to avoid deadlocks.
+- Push filter/sort/group/aggregate work into SQL. Verify Prisma
+  generates expected SQL — e.g. prefer `group_by` over
+  `find_many(distinct=...)` (the latter does client-side processing).
+- For results > ~10 MB, paginate. Prefer cursor-based pagination
+  (`skip` is O(n)). Always include explicit `order`.
+- Use `select` on wide tables to fetch only needed columns. Downstream
+  code must not access unselected fields.
+- Check index coverage in `schema.prisma`. Prefer extending an
+  existing index over adding a new one (unless `@@unique`). Only add
+  indexes for large/frequent queries.
+- **Schema changes must update all four `schema.prisma` copies**
+  (`schema.prisma`, `litellm/proxy/`, `litellm-proxy-extras/`,
+  `litellm-js/spend-logs/` for SpendLogs) plus a migration under
+  `litellm-proxy-extras/litellm_proxy_extras/migrations/`.
 
-### HTTP Client Cache Safety
-- **Never close HTTP/SDK clients on cache eviction.** `LLMClientCache._remove_key()` must not call `close()`/`aclose()` on evicted clients — they may still be used by in-flight requests. Doing so causes `RuntimeError: Cannot send a request, as the client has been closed.` after the 1-hour TTL expires. Cleanup happens at shutdown via `close_litellm_async_clients()`.
+## HTTP client cache safety
 
-### Troubleshooting: DB schema out of sync after proxy restart
-`litellm-proxy-extras` runs `prisma migrate deploy` on startup using **its own** bundled migration files, which may lag behind schema changes in the current worktree. Symptoms: `Unknown column`, `Invalid prisma invocation`, or missing data on new fields.
+**`LLMClientCache._remove_key()` must not call `close()` / `aclose()`
+on evicted clients** — in-flight requests still hold them, and closing
+mid-flight raises `RuntimeError: Cannot send a request, as the client
+has been closed.` after the 1-hour TTL expires. Cleanup happens at
+shutdown via `close_litellm_async_clients()`.
 
-**Diagnose:** Run `\d "TableName"` in psql and compare against `schema.prisma` — missing columns confirm the issue.
+## MCP OAuth / OpenAPI transport mapping
 
-**Fix options:**
-1. **Create a Prisma migration** (permanent) — run `prisma migrate dev --name <description>` in the worktree. The generated file will be picked up by `prisma migrate deploy` on next startup.
-2. **Apply manually for local dev** — `psql -d litellm -c "ALTER TABLE ... ADD COLUMN IF NOT EXISTS ..."` after each proxy start. Fine for dev, not for production.
-3. **Update litellm-proxy-extras** — if the package is installed from PyPI, its migration directory must include the new file. Either update the package or run the migration manually until the next release ships it.
+- `TRANSPORT.OPENAPI` is a UI-only concept. The backend only accepts
+  `"http"`, `"sse"`, or `"stdio"`. Map to `"http"` before any API call
+  (including pre-OAuth temp-session calls).
+- FastAPI validation errors return `detail` as `[{loc, msg, type}, ...]`.
+  Error extractors must handle: array (map `.msg`), string, nested
+  `{error: string}`, and a fallback.
+- If an MCP server has `authorization_url` stored, skip OAuth discovery
+  (`_discovery_metadata`) — the server URL for OpenAPI MCPs is the spec
+  file, not the API base, and fetching it causes timeouts.
+- `client_id` is optional in `/authorize` — if the server has stored
+  `client_id` in credentials, use that. Never require callers to
+  re-supply it.
+
+## MCP credential storage
+
+- OAuth and BYOK credentials share `litellm_mcpusercredentials`,
+  distinguished by `"type"` in the JSON payload (`"oauth2"` vs plain
+  string). When deleting OAuth credentials, check type first to avoid
+  deleting a BYOK credential for the same `(user_id, server_id)` pair.
+- Pass raw `expires_at` timestamps to the client — never `None` for
+  expired credentials. The frontend computes the "Expired" display
+  state from the timestamp.
+- Catch `RecordNotFoundError` (not bare `except Exception`) for
+  "already deleted" in credential delete endpoints.
+
+## Browser storage safety (UI)
+
+**Never write LiteLLM access tokens or API keys to `localStorage`** —
+use `sessionStorage` only. `localStorage` survives browser close and is
+readable by any injected script (XSS).
+
+Shared utility functions (e.g. `extractErrorMessage`) belong in
+`src/utils/` — never define inline in hooks or duplicate across files.
+
+## UI component library
+
+New UI work uses `antd`. We are migrating off `@tremor/react` — do not
+introduce new `Badge`/`Text`/`Card`/`Grid`/`Title` imports from
+`@tremor/react` in any new or modified file. Use `antd` equivalents:
+`Tag` for labels, `Typography.Text`/`Typography.Title`/
+`Typography.Paragraph` for textual content (avoid plain `<span>`/`<p>`/
+`<h*>` when Typography fits), `Card` from `antd`. `antd` has no
+`"yellow"` Tag color — use `"gold"`.
+
+## UI / backend consistency
+
+When wiring a new UI entity to an existing backend endpoint, verify the
+backend contract (single value vs. array, required vs. optional) and
+match UI controls — e.g. single-select dropdown when the backend
+accepts a single value, not a multi-select.
+
+## Setup wizard (`litellm/setup_wizard.py`)
+
+- Single `SetupWizard` class with `@staticmethod` methods. No
+  module-level functions except `run_setup_wizard()` and pure helpers
+  (color, ANSI).
+- Validate credentials via `litellm.utils.check_valid_key(model, api_key)`,
+  not a custom completion call.
+- Don't hardcode provider env-key names or model lists. Add a
+  `test_model` field per provider entry to drive `check_valid_key`;
+  set to `None` for providers that can't be validated with a single
+  key (Azure, Bedrock, Ollama).
+
+## CI supply-chain safety
+
+These rules apply to every download in CI — binaries, install scripts,
+language version managers, package repos. No exceptions.
+
+- **Never pipe a remote script into a shell** (`curl ... | bash`).
+  Download to a file, verify SHA-256, then install.
+- **Pin every external tool to a specific version** with a full URL.
+  No `latest` / `stable` — those silently change under you.
+- **Verify checksums on downloaded binaries.** Use the provider's
+  `.sha256` sidecar if available, otherwise compute and hardcode.
+- Prefer reusable CircleCI `commands:` so a tool is installed/verified
+  in exactly one place, referenced everywhere with `- install_<tool>`.
+- Don't add tools just because they were there. Audit each external
+  dependency on every CI touch — remove if a shell one-liner or an
+  in-image tool can replace it.
+
+## Enterprise features
+
+Enterprise-only code in `enterprise/`. Optional features enable via env
+vars; separate licensing and authentication.
+
+## Database migrations
+
+Prisma handles schema migrations. Migration files auto-generate with
+`prisma migrate dev`. Always test migrations against both PostgreSQL
+and SQLite.
+
+## Troubleshooting: DB schema out of sync after proxy restart
+
+`litellm-proxy-extras` runs `prisma migrate deploy` on startup using
+**its own** bundled migrations, which may lag behind schema changes in
+the current worktree. Symptoms: `Unknown column`, `Invalid prisma
+invocation`, missing data on new fields.
+
+Diagnose: `\d "TableName"` in psql vs `schema.prisma` — missing columns
+confirm.
+
+Fix:
+1. **Permanent** — `prisma migrate dev --name <description>` in the
+   worktree. The generated file is picked up by `prisma migrate deploy`
+   on next startup.
+2. **Local dev** — `psql -d litellm -c "ALTER TABLE ... ADD COLUMN IF
+   NOT EXISTS ..."` after each proxy start. Dev-only, not production.
+3. **PyPI install** — if `litellm-proxy-extras` is installed from PyPI,
+   its migration directory must include the new file. Update the
+   package or apply the migration manually until the next release.
+
+## GitHub templates
+
+- Bug reports: `.github/ISSUE_TEMPLATE/bug_report.yml` — what happened
+  vs. expected + log output + LiteLLM version.
+- Feature requests: `.github/ISSUE_TEMPLATE/feature_request.yml` —
+  describe + motivation + use case.
+- PRs: `.github/pull_request_template.md` — at least 1 test in
+  `tests/litellm/`; `make test-unit` must pass.
