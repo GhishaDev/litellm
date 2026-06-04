@@ -1,14 +1,33 @@
 # CLAUDE.md
 
 Guidance for Claude Code (claude.ai/code) when working in this repo.
-This is an internal fork of `BerriAI/litellm` pinned to the upstream
-`v1.83.10-stable` tag, with internal fixes layered on top.
+This is an internal fork of `BerriAI/litellm` pinned to a specific
+upstream `vX.Y.Z-stable` tag, with internal fixes layered on top.
+See **Current pinning** below for the active pin and branch names.
+
+## Current pinning
+
+This fork pins to one upstream `vX.Y.Z-stable` tag at a time and lives
+in a parallel set of branches named after that pin. Today:
+
+- **Upstream pin**: `v1.83.10-stable`
+- **Ship branch**: `ship/v1.83.10`
+- **Upstream-sync branch**: `internal/v1.83.10-stable`
+- **Internal release tag pattern**: `v1.83.10-internal.N`
+- **Latest release**: see `git tag -l 'v1.83.10-internal.*' --sort=-v:refname | head -1`
+
+When the pin changes (version bump), update **this block** and the
+Branching strategy table below. Every other reference in this file uses
+"the ship branch" / "the upstream-sync branch" generically.
 
 ## Hot path — read this before doing anything
 
-- Every fix PR targets **`ship/v1.83.10`**, not `internal/v1.83.10-stable`
-  (has 1700+ upstream-sync commits) and not `litellm_internal_staging`
-  (pure upstream tracker).
+- Before writing an internal fix, check **Fork tier classification**.
+  Tier C/D fixes default to upstream PRs first; only carry on the ship
+  branch if upstream rejects or scheduling demands it.
+- Every fix PR targets **the ship branch** (see Current pinning), not
+  the upstream-sync branch (has 1700+ upstream-sync commits) and not
+  `litellm_internal_staging` (pure upstream tracker).
 - Run `uv run black .` before committing — CI enforces.
 - Full-stack scenarios (DB schema, background jobs, real HTTP) go under
   `e2e/cases/NN_*.md`, not into bespoke `tests/` integration files.
@@ -21,7 +40,7 @@ This is an internal fork of `BerriAI/litellm` pinned to the upstream
 
 Do not take these actions autonomously without explicit instruction:
 
-- Push to `ship/v1.83.10`, `internal/v1.83.10-stable`, or any tag.
+- Push to the ship branch, the upstream-sync branch, or any tag.
   Always work via a `fix/*` branch + PR.
 - Run `scripts/release-tag.sh`. It has an interactive `[y/N]` prompt
   meant for the human releaser — suggest `! scripts/release-tag.sh v...`
@@ -30,6 +49,55 @@ Do not take these actions autonomously without explicit instruction:
   upstream Next.js build artifacts; ignore the `git status` noise there.
 - Skip pre-commit hooks (`--no-verify`), bypass signing, or amend an
   already-pushed commit.
+
+## Fork tier classification
+
+Every change to this repo belongs to one of four tiers. The tier
+dictates where the change lives and whether to push it upstream.
+
+| Tier | Description | Typical location | Upstream policy |
+|---|---|---|---|
+| **A** | Truly company-specific logic | `litellm_extras/` | Never push upstream |
+| **B** | Internal infra / branding | `.github/workflows.*`, `Dockerfile`, `e2e/`, internal navbar version | Never push upstream |
+| **C** | Universal bug fix | Touches `litellm/` core | **Default: submit PR to BerriAI/litellm.** Only carry on the ship branch if upstream rejects or scheduling demands it |
+| **D** | Universal mechanism + company opinion | Touches `litellm/` core | **Default: submit upstream as a hook/config + carry our policy locally.** Make the mechanism configurable so upstream accepts it |
+
+Every PR description must declare `Tier: A/B/C/D`. For Tier C and D,
+PRs must also answer "Tried upstream first? (link or justification)".
+This keeps the fork's universal-bug-fix delta as small as possible so
+future version bumps stay cheap.
+
+The PR template (`.github/pull_request_template.md`) enforces this with
+a checkbox section.
+
+## Upstream sync cadence
+
+The pinned upstream stable line keeps receiving `.patch.N` releases
+after we pin (e.g. `v1.83.10-stable.patch.1`). Upstream `main` moves
+daily via nightly tags. Without a sync cadence, every version bump
+becomes a multi-week project. The schedule below keeps drift bounded.
+
+**Monthly** (first Monday):
+
+- Run `scripts/upstream-sync-check.sh` (TODO) to list commits on
+  upstream's current stable line and on `upstream/main` since our pin.
+- Triage security fixes (filter for `[SECURITY]`, `fix(auth)`, CVE
+  labels). Open `fix/*` PRs for each must-backport item.
+- 30-minute review with one other engineer.
+
+**Quarterly**:
+
+- Evaluate whether to bump to a newer stable line (e.g. 1.87.x → 1.88.x).
+  See "Cutting an internal release" and any version-bump runbook in
+  `e2e/cases/` or `docs/`.
+- Re-classify the carried ship-branch delta — any Tier C/D fix that
+  has been upstreamed by someone else? Drop it.
+
+**Never**:
+
+- Sit on a pinned tag for more than 6 months without an explicit
+  sustainability discussion. Beyond 12 months, the fork begins to
+  permanently diverge.
 
 ## Development workflow
 
@@ -54,37 +122,43 @@ uv run python script.py   # for non-test scripts
 
 ## Branching strategy
 
-| Branch | Purpose | Stays clean? |
+Branch names are derived from the current pin (see Current pinning).
+The examples below use the current pin `v1.83.10`.
+
+| Branch / tag | Purpose | Stays clean? |
 |---|---|---|
-| `v1.83.10-stable` (tag) | Immutable upstream pin | yes — never moves |
-| `ship/v1.83.10` | Long-term ship — advances only via merged `fix/*` PRs | yes |
-| `internal/v1.83.10-stable` | Upstream-sync working branch | no — collects upstream commits |
+| `<pin>-stable` tag — e.g. `v1.83.10-stable` | Immutable upstream pin | yes — never moves |
+| `ship/<pin>` — e.g. `ship/v1.83.10` | Long-term ship — advances only via merged `fix/*` PRs | yes |
+| `internal/<pin>-stable` — e.g. `internal/v1.83.10-stable` | Upstream-sync working branch | no — collects upstream commits |
 | `litellm_internal_staging` | Pure upstream tracker for `BerriAI/litellm` | tracks upstream |
-| `fix/<name>` | Per-bug feature branch | yes — merged into `ship/v1.83.10` |
+| `fix/<name>` | Per-bug feature branch | yes — merged into the ship branch |
 
 ```bash
-git checkout -b fix/<name> ship/v1.83.10
-gh pr create --base ship/v1.83.10 --head fix/<name>
+SHIP=ship/v1.83.10   # see Current pinning for the active ship branch
+git checkout -b fix/<name> "$SHIP"
+gh pr create --base "$SHIP" --head fix/<name>
 ```
 
-`ship/v1.83.10` only moves when a `fix/*` PR merges, so it stays exactly
-`TAG + merged fixes`. Fixes never have to rebase against moving upstream
-— the upstream-sync churn lives on `internal/v1.83.10-stable`.
+The ship branch only moves when a `fix/*` PR merges, so it stays
+exactly `TAG + merged fixes`. Fixes never have to rebase against moving
+upstream — the upstream-sync churn lives on the upstream-sync branch.
 
 ## Cutting an internal release
 
 Always use `scripts/release-tag.sh`. Never `git tag` by hand.
 
 ```bash
-# After fix/* PR merged into ship/v1.83.10 and local ship is up-to-date:
-scripts/release-tag.sh v1.83.10-internal.N   # N = next integer
+# After fix/* PR merged into the ship branch and local ship is up-to-date:
+scripts/release-tag.sh <pin>-internal.N   # e.g. v1.83.10-internal.8
 ```
 
 Tag format is enforced: `^v[0-9]+\.[0-9]+\.[0-9]+-internal\.[0-9]+$`.
-`N` is monotonically increasing — don't reset, skip, or reuse. The
-current latest:
+`N` is monotonically increasing within a pin — don't reset, skip, or
+reuse. On a version bump, `N` restarts from 1 under the new pin. Find
+the current latest:
 
 ```bash
+# See Current pinning for the active <pin> prefix
 git tag -l 'v1.83.10-internal.*' --sort=-v:refname | head -1
 ```
 
