@@ -2956,7 +2956,8 @@ class Router:
             deployment_timeout_param = _timeout_debug_deployment_dict.get(
                 "litellm_params", {}
             ).get("timeout", None)
-            e.message += f"\n\nDeployment Info: request_timeout: {deployment_request_timeout_param}\ntimeout: {deployment_timeout_param}"
+            if litellm.expose_router_debug_in_errors:
+                e.message += f"\n\nDeployment Info: request_timeout: {deployment_request_timeout_param}\ntimeout: {deployment_timeout_param}"
             # Set per-deployment num_retries on exception for retry logic
             if deployment is not None:
                 self._set_deployment_num_retries_on_exception(e, deployment)
@@ -6493,7 +6494,8 @@ class Router:
                         )
                     )
 
-                    e.message += "\n{}".format(error_message)
+                    if litellm.expose_router_debug_in_errors:
+                        e.message += "\n{}".format(error_message)
             elif isinstance(e, litellm.ContentPolicyViolationError):
                 if content_policy_fallbacks is not None:
                     content_policy_fallback_model_group: Optional[List[str]] = (
@@ -6528,7 +6530,8 @@ class Router:
                         )
                     )
 
-                    e.message += "\n{}".format(error_message)
+                    if litellm.expose_router_debug_in_errors:
+                        e.message += "\n{}".format(error_message)
             if fallbacks is not None and model_group is not None:
                 verbose_router_logger.debug(f"inside model fallbacks: {fallbacks}")
                 (
@@ -6546,7 +6549,10 @@ class Router:
                     verbose_router_logger.info(
                         f"No fallback model group found for original model_group={model_group}. Fallbacks={fallbacks}"
                     )
-                    if hasattr(original_exception, "message"):
+                    if (
+                        hasattr(original_exception, "message")
+                        and litellm.expose_router_debug_in_errors
+                    ):
                         original_exception.message += f"No fallback model group found for original model_group={model_group}. Fallbacks={fallbacks}"  # type: ignore
                     raise original_exception
 
@@ -6577,7 +6583,10 @@ class Router:
             )
             fallback_failure_exception_str = str(new_exception)
 
-        if hasattr(original_exception, "message"):
+        if (
+            hasattr(original_exception, "message")
+            and litellm.expose_router_debug_in_errors
+        ):
             # add the available fallbacks to the exception
             original_exception.message += ". Received Model Group={}\nAvailable Model Group Fallbacks={}".format(  # type: ignore
                 model_group,
@@ -7725,6 +7734,44 @@ class Router:
 
         return hash_object.hexdigest()
 
+    @staticmethod
+    def _backfill_cost_fields_from_canonical(
+        model_info_dict: dict,
+        litellm_params: dict,
+    ) -> None:
+        """
+        Backfill missing CustomPricingLiteLLMParams fields in a
+        deployment-UUID model_cost entry from the canonical static
+        litellm.model_cost entry for the bare model name.
+
+        The dashboard /model/new form only exposes input_cost_per_token
+        and output_cost_per_token. Without this backfill, deployments
+        added via the dashboard end up registered under their UUID with
+        cache_*_input_token_cost = None, and the cost calculator's
+        custom-pricing path silently drops cache token charges.
+
+        Priority:
+          1. Values already present in ``model_info_dict`` (set explicitly
+             by the user via dashboard or config) — kept as-is.
+          2. Values in ``litellm.model_cost[bare_model_name]`` for known
+             upstream models — copied into missing slots.
+
+        Only known models are eligible (those that have a static
+        model_cost entry). Custom in-house models with no static entry
+        pass through unchanged. Mutates ``model_info_dict`` in place.
+        """
+        bare_model_name = litellm_params.get("model")
+        if not bare_model_name:
+            return
+        canonical = litellm.model_cost.get(bare_model_name)
+        if not canonical:
+            return
+        for field in CustomPricingLiteLLMParams.model_fields.keys():
+            if model_info_dict.get(field) is None:
+                value = canonical.get(field)
+                if value is not None:
+                    model_info_dict[field] = value
+
     def _create_deployment(
         self,
         deployment_info: dict,
@@ -7752,6 +7799,14 @@ class Router:
             for field in CustomPricingLiteLLMParams.model_fields.keys():
                 if deployment.litellm_params.get(field) is not None:
                     _model_info[field] = deployment.litellm_params[field]
+
+            # Backfill any missing cost fields from the canonical static
+            # entry for the bare model name. User-supplied values above
+            # always win; this only fills slots the user didn't touch.
+            self._backfill_cost_fields_from_canonical(
+                model_info_dict=_model_info,
+                litellm_params=_litellm_params,
+            )
 
             ## REGISTER MODEL INFO IN LITELLM MODEL COST MAP
             model_id = deployment.model_info.id
@@ -8499,6 +8554,13 @@ class Router:
         # zero-cost models, causing budget checks to block free models.
         _model_id = deployment.model_info.id
         if _model_id is not None:
+            # Backfill any missing cost fields from the canonical static
+            # entry for the bare model name. User-supplied values above
+            # always win; this only fills slots the user didn't touch.
+            self._backfill_cost_fields_from_canonical(
+                model_info_dict=_model_info_dict,
+                litellm_params=deployment.litellm_params.model_dump(),
+            )
             litellm.register_model(model_cost={_model_id: _model_info_dict})
 
         ## REGISTER MODEL INFO IN LITELLM MODEL COST MAP
