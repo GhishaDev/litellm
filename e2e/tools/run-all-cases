@@ -399,6 +399,20 @@ case_23() {
 }
 
 
+case_21() {
+    echo "[21] /v1/messages error shape (Anthropic envelope)..."
+    local out=/tmp/e2e_case21.out
+    bash e2e/cases/data/21_anthropic_error_shape.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "21 anthropic-error-shape: $(grep -c '^PASS' "$out") assertions PASS"
+    elif [ "$rc" -eq 77 ]; then
+        skip "21 anthropic-error-shape" "$(grep -m1 SKIP "$out")"
+    else
+        fail "21 anthropic-error-shape" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # Pre-flight: proxy must be ready
 if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
         "$PROXY/health/readiness" 2>/dev/null | grep -q '^2'; then
@@ -515,6 +529,9 @@ fi
 if [ "$MOCK_ONLY" -eq 1 ]; then
     case_23
 fi
+# Case 21 triggers only 4xx bodies (malformed request) — no paid upstream
+# call; safe under --skip-paid.
+case_21
 
 echo
 echo "============ SUMMARY ============"
