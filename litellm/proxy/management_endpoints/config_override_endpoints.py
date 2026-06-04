@@ -30,6 +30,7 @@ from litellm.proxy._types import (
     UserAPIKeyAuth,
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.types.llms.custom_http import httpxSpecialProvider
 from litellm.types.proxy.management_endpoints.config_overrides import (
     ConfigOverrideSettingsResponse,
@@ -310,8 +311,10 @@ async def update_hashicorp_vault_config(
         proxy_config.initialize_secret_manager(key_management_system="hashicorp_vault")
     except Exception as e:
         _set_env_vars(previous_env)
-        verbose_proxy_logger.exception(
-            "Error reinitializing Hashicorp Vault secret manager: %s", str(e)
+        log_proxy_exception(
+            verbose_proxy_logger,
+            "hashicorp_vault_reinit",
+            e,
         )
         raise HTTPException(
             status_code=500,

@@ -7,6 +7,7 @@ from fastapi import HTTPException, status
 
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import CommonProxyErrors
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.utils import PrismaClient
 from litellm.types.proxy.management_endpoints.common_daily_activity import (
     BreakdownMetrics,
@@ -954,7 +955,7 @@ async def get_daily_activity(
         )
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error fetching daily activity: {str(e)}")
+        log_proxy_exception(verbose_proxy_logger, "get_daily_activity", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to fetch analytics: {str(e)}"},
@@ -1044,9 +1045,7 @@ async def get_daily_activity_aggregated(
         )
 
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"Error fetching aggregated daily activity: {str(e)}"
-        )
+        log_proxy_exception(verbose_proxy_logger, "get_daily_activity_aggregated", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to fetch analytics: {str(e)}"},

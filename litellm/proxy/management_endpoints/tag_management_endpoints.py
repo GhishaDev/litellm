@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import UserAPIKeyAuth, user_api_key_has_admin_view
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.management_endpoints.common_daily_activity import (
     SpendAnalyticsPaginatedResponse,
     get_daily_activity,
@@ -254,7 +255,7 @@ async def new_tag(
             "tag": tag_config,
         }
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error creating tag: {str(e)}")
+        log_proxy_exception(verbose_proxy_logger, "/tag/new", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -297,7 +298,7 @@ async def _add_tag_to_deployment(deployment: "Deployment", tag: str):
             data={"litellm_params": json.dumps(existing_params)},
         )
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error adding tag to deployment: {str(e)}")
+        log_proxy_exception(verbose_proxy_logger, "/tag/add_deployment", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -388,7 +389,7 @@ async def update_tag(
             "tag": tag_config,
         }
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error updating tag: {str(e)}")
+        log_proxy_exception(verbose_proxy_logger, "/tag/update", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 

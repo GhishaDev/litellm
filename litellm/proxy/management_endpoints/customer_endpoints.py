@@ -21,6 +21,7 @@ from litellm.litellm_core_utils.duration_parser import duration_in_seconds
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import *
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.management_endpoints.common_daily_activity import get_daily_activity
 from litellm.proxy.management_helpers.object_permission_utils import (
     _set_object_permission,
@@ -393,11 +394,7 @@ async def new_end_user(
 
         return response_dict
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.management_endpoints.customer_endpoints.new_end_user(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/customer/new", e)
         if "Unique constraint failed on the fields: (`user_id`)" in str(e):
             raise ProxyException(
                 message=f"Customer already exists, passed user_id={data.user_id}. Please pass a new user_id.",
@@ -475,11 +472,7 @@ async def end_user_info(
         return response_dict
 
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.management_endpoints.customer_endpoints.end_user_info(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/customer/info", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -683,11 +676,7 @@ async def update_end_user(
         # update based on remaining passed in values
 
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.update_end_user(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/customer/update", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -849,11 +838,7 @@ async def list_end_user(
         return returned_response
 
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.management_endpoints.customer_endpoints.list_end_user(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/customer/list", e)
         raise handle_exception_on_proxy(e)
 
 

@@ -22,6 +22,7 @@ from typing_extensions import TypedDict
 
 import litellm
 from litellm._logging import verbose_proxy_logger
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.common_utils.http_parsing_utils import _safe_get_request_headers
 from litellm._uuid import uuid
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
@@ -493,7 +494,9 @@ async def _create_user_if_not_exists(
         return created_user
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Failed to create user {user_id}: {e}")
+        log_proxy_exception(
+            verbose_proxy_logger, "scim_create_user", e, extra={"user_id": user_id}
+        )
         return None
 
 
@@ -1344,11 +1347,19 @@ async def patch_team_membership(
                     f"User {user_id} is already in team {_team_id}, skipping add"
                 )
             else:
-                verbose_proxy_logger.exception(
-                    f"Error adding user to team {_team_id}: {e}"
+                log_proxy_exception(
+                    verbose_proxy_logger,
+                    "scim_add_user_to_team",
+                    e,
+                    extra={"team_id": _team_id},
                 )
         except Exception as e:
-            verbose_proxy_logger.exception(f"Error adding user to team {_team_id}: {e}")
+            log_proxy_exception(
+                verbose_proxy_logger,
+                "scim_add_user_to_team",
+                e,
+                extra={"team_id": _team_id},
+            )
 
     for _team_id in teams_ids_to_remove_user_from:
         try:
@@ -1359,8 +1370,11 @@ async def patch_team_membership(
                 ),
             )
         except Exception as e:
-            verbose_proxy_logger.exception(
-                f"Error removing user from team {_team_id}: {e}"
+            log_proxy_exception(
+                verbose_proxy_logger,
+                "scim_remove_user_from_team",
+                e,
+                extra={"team_id": _team_id},
             )
 
     return True

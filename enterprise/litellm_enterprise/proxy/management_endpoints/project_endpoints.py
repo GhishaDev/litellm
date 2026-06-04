@@ -19,6 +19,7 @@ from litellm._logging import verbose_proxy_logger
 from litellm._uuid import uuid
 from litellm.proxy._types import *
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.common_utils.exception_logging import log_proxy_exception
 from litellm.proxy.management_endpoints.common_utils import _set_object_metadata_field
 from litellm.proxy.management_helpers.utils import (
     management_endpoint_wrapper,
@@ -468,11 +469,7 @@ async def new_project(
 
         return response
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.management_endpoints.project_endpoints.new_project(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/project/new", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -706,11 +703,7 @@ async def update_project(  # noqa: PLR0915
 
         return updated_project
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.management_endpoints.project_endpoints.update_project(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/project/update", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -814,11 +807,7 @@ async def delete_project(
 
         return deleted_projects
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.management_endpoints.project_endpoints.delete_project(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/project/delete", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -895,11 +884,7 @@ async def project_info(
 
         return project
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.management_endpoints.project_endpoints.project_info(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/project/info", e)
         raise handle_exception_on_proxy(e)
 
 
@@ -955,9 +940,5 @@ async def list_projects(
 
         return projects
     except Exception as e:
-        verbose_proxy_logger.exception(
-            "litellm.proxy.management_endpoints.project_endpoints.list_projects(): Exception occured - {}".format(
-                str(e)
-            )
-        )
+        log_proxy_exception(verbose_proxy_logger, "/project/list", e)
         raise handle_exception_on_proxy(e)
