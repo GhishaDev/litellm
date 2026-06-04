@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""
+e2e/tools/call — issue one chat/completions request through the E2E proxy
+and print the full response JSON to stdout.
+
+Design
+------
+Stdlib only (urllib + json), so it runs on any Python 3.10+ without
+extra deps. The proxy itself handles all provider-specific wire details;
+this tool just builds the OpenAI-shape payload, optionally adds an
+Anthropic `cache_control` marker, sets the master key, and prints what
+comes back.
+
+Examples
+--------
+  # Anthropic + 5m cache write (default TTL):
+  e2e/tools/call --provider anthropic --cache ephemeral
+
+  # Anthropic + 1h cache write:
+  e2e/tools/call --provider anthropic --cache ephemeral --ttl 1h
+
+  # OpenAI: long prompt, auto cache (run twice to see hit):
+  e2e/tools/call --provider openai --prompt-tokens 2000 --seed run42
+
+  # Plain call, no caching:
+  e2e/tools/call --provider anthropic --cache none
+
+Exit codes
+----------
+  0   2xx from proxy
+  2   non-2xx response (response body still printed to stdout for diagnosis)
+  3   network / connection error
+  4   misuse (bad args)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+DEFAULT_PORT = int(os.environ.get("E2E_PROXY_PORT", "4011"))
+DEFAULT_HOST = os.environ.get("E2E_PROXY_HOST", "localhost")
+DEFAULT_MASTER_KEY = os.environ.get("LITELLM_MASTER_KEY", "sk-e2e-test")
+
+# Approx 4 chars per token for English (good enough to clear the 1024 /
+# 2048 minimum-cacheable-tokens thresholds).
+CHARS_PER_TOKEN = 4
+
+PROVIDER_MODEL_DEFAULTS = {
+    "anthropic": "claude-sonnet-cache",
+    "anthropic-haiku": "claude-haiku-cache",
+    "openai": "gpt-4o-mini-cache",
+}
+
+
+def build_long_text(min_tokens: int, seed: Optional[str]) -> str:
+    """Generate >= min_tokens of deterministic-looking filler.
+
+    `seed` is mixed into the content. Same seed -> identical prefix
+    across runs (needed to trigger OpenAI auto-cache or Anthropic
+    cache read on the second request).
+    """
+    seed_str = seed or "default"
+    base = (
+        f"You are a careful assistant. Session seed: {seed_str}. "
+        "Below is reference context you should keep in mind. "
+    )
+    para = (
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
+        "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. "
+        "Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris "
+        "nisi ut aliquip ex ea commodo consequat. "
+    )
+    chars_needed = min_tokens * CHARS_PER_TOKEN
+    out = [base]
+    while sum(len(s) for s in out) < chars_needed:
+        out.append(para)
+    return "".join(out)
+
+
+def build_messages(
+    provider: str,
+    long_text: str,
+    cache: str,
+    ttl: str,
+    user_msg: str,
+) -> List[Dict[str, Any]]:
+    """Anthropic structured `content` array with cache_control vs OpenAI plain."""
+    if provider.startswith("anthropic") and cache == "ephemeral":
+        cache_control: Dict[str, Any] = {"type": "ephemeral"}
+        if ttl == "1h":
+            cache_control["ttl"] = "1h"
+        system_content = [
+            {
+                "type": "text",
+                "text": long_text,
+                "cache_control": cache_control,
+            }
+        ]
+        return [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_msg},
+        ]
+
+    # OpenAI: plain text system. Caching is automatic when prompt is long
+    # enough and a recent identical prefix is observed.
+    return [
+        {"role": "system", "content": long_text},
+        {"role": "user", "content": user_msg},
+    ]
+
+
+def post_chat_completion(
+    base_url: str, master_key: str, payload: Dict[str, Any], timeout: float
+) -> Dict[str, Any]:
+    req = urllib.request.Request(
+        f"{base_url}/v1/chat/completions",
+        method="POST",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {master_key}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+            return {"status": resp.status, "body": body}
+    except urllib.error.HTTPError as e:
+        return {"status": e.code, "body": e.read().decode("utf-8", errors="replace")}
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return {"status": 0, "body": json.dumps({"connection_error": str(e)})}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="e2e/tools/call")
+    p.add_argument(
+        "--provider",
+        choices=["anthropic", "anthropic-haiku", "openai"],
+        required=True,
+    )
+    p.add_argument(
+        "--model",
+        help="Override model_name from config. Defaults per provider.",
+    )
+    p.add_argument(
+        "--cache",
+        choices=["ephemeral", "none"],
+        default="ephemeral",
+        help="ephemeral=add cache_control marker (anthropic only). "
+        "none=plain request. (default: ephemeral)",
+    )
+    p.add_argument(
+        "--ttl",
+        choices=["5m", "1h"],
+        default="5m",
+        help="Anthropic cache TTL. (default: 5m)",
+    )
+    p.add_argument(
+        "--prompt-tokens",
+        type=int,
+        default=1500,
+        help="Approximate target size of the system prompt. Must clear "
+        "the provider's cache threshold (Sonnet 4 / 4.5 / 4.6: 1024, "
+        "Haiku 4.5: 4096, Opus 4.5 / 4.6 / 4.7: 4096, "
+        "GPT-4o-mini: 1024). (default: 1500)",
+    )
+    p.add_argument(
+        "--seed",
+        default=None,
+        help="Tag to keep prompt identical across runs (so OpenAI auto-cache "
+        "and Anthropic read-on-second-request both fire reliably).",
+    )
+    p.add_argument(
+        "--user-message",
+        default="Reply with a single short word.",
+        help="The user turn appended after the cached system prompt.",
+    )
+    p.add_argument("--max-tokens", type=int, default=32)
+    p.add_argument(
+        "--proxy-url",
+        default=f"http://{DEFAULT_HOST}:{DEFAULT_PORT}",
+        help=f"(default: env E2E_PROXY_{{HOST,PORT}} = http://{DEFAULT_HOST}:{DEFAULT_PORT})",
+    )
+    p.add_argument(
+        "--master-key",
+        default=DEFAULT_MASTER_KEY,
+        help="Used unless --api-key is set. Defaults to LITELLM_MASTER_KEY env "
+        "or sk-e2e-test.",
+    )
+    p.add_argument(
+        "--api-key",
+        default=None,
+        help="Override --master-key for this call (use for virtual-key tests).",
+    )
+    p.add_argument(
+        "--user-id",
+        default=None,
+        help="Stable user identifier forwarded as OpenAI `user` field. Some "
+        "gateways (notably the corp Anthropic shim at maasapi.*) use this "
+        "for sticky upstream LB so subsequent requests share cache state. "
+        "Without it, requests round-robin across upstream accounts and "
+        "Anthropic cache_read never hits.",
+    )
+    p.add_argument("--timeout", type=float, default=60.0)
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+
+    model = args.model or PROVIDER_MODEL_DEFAULTS[args.provider]
+    long_text = build_long_text(args.prompt_tokens, args.seed)
+    messages = build_messages(
+        args.provider, long_text, args.cache, args.ttl, args.user_message
+    )
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": args.max_tokens,
+    }
+    if args.user_id:
+        # OpenAI-shape `user` field. litellm forwards this through to provider:
+        # for Anthropic backends it lands in `metadata.user_id`, which the
+        # corp gateway uses for sticky upstream-key LB.
+        payload["user"] = args.user_id
+
+    auth_key = args.api_key or args.master_key
+    result = post_chat_completion(args.proxy_url, auth_key, payload, args.timeout)
+
+    # Always print body as JSON. If body itself is valid JSON, re-emit
+    # pretty; otherwise wrap as { "raw": ... } so stdout is always JSON.
+    body = result["body"]
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        parsed = {"raw": body}
+
+    out = {
+        "request": {
+            "proxy_url": args.proxy_url,
+            "model": model,
+            "provider": args.provider,
+            "cache": args.cache,
+            "ttl": args.ttl if args.cache == "ephemeral" else None,
+            "prompt_tokens_requested": args.prompt_tokens,
+            "seed": args.seed,
+        },
+        "response_status": result["status"],
+        "response": parsed,
+    }
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+
+    if result["status"] == 0:
+        return 3
+    if not (200 <= result["status"] < 300):
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

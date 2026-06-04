@@ -1,0 +1,356 @@
+#!/usr/bin/env python3
+"""
+e2e/tools/proxy — docker-compose lifecycle wrapper for the litellm test proxy.
+
+Subcommands
+-----------
+  start     Build (if needed) + bring container up in background.
+  stop      Bring container down, remove network.
+  status    Poll /health/readiness; exit 0 if proxy is responding, 1 if not.
+  logs      Tail container logs (Ctrl-C to detach).
+  rebuild   Force rebuild from current source (no cache), useful after a
+            litellm/ code change.
+  url       Print proxy base URL (e.g. http://localhost:4011) — handy for
+            piping into other tools.
+
+All output is plain text on stdout for easy scripting.
+
+Compose project name is fixed to `litellm-e2e` so multiple worktrees do
+not stomp each other; switch workspaces with `--project-name` if needed.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+THIS_DIR = Path(__file__).resolve().parent
+COMPOSE_FILE = (THIS_DIR.parent / "_config" / "docker-compose.yml").resolve()
+ENV_FILE = (THIS_DIR.parent / ".env").resolve()
+RENDERED_CONFIG = (THIS_DIR.parent / "_config" / ".litellm.rendered.yaml").resolve()
+DEFAULT_PORT = int(os.environ.get("E2E_PROXY_PORT", "4011"))
+DEFAULT_HOST = os.environ.get("E2E_PROXY_HOST", "localhost")
+PROJECT_NAME = "litellm-e2e"
+
+# Defaults if the corresponding env var is unset/blank in .env.
+# Include the provider prefix so users can route to bedrock / vertex / openrouter
+# by just changing the env var (e.g. MODEL_ANTHROPIC_SONNET=bedrock/anthropic.claude-...).
+DEFAULT_MODEL_ANTHROPIC_SONNET = "anthropic/claude-3-5-sonnet-20241022"
+DEFAULT_MODEL_ANTHROPIC_HAIKU = "anthropic/claude-3-5-haiku-20241022"
+DEFAULT_MODEL_OPENAI = "openai/gpt-4o-mini"
+
+
+def _load_dotenv() -> None:
+    """Minimal .env parser — avoids the python-dotenv dependency on the host.
+
+    Honors `KEY=VALUE` and `KEY="..."` lines, ignores comments and blanks,
+    does NOT override values already in os.environ (shell wins, matching
+    python-dotenv default behavior).
+    """
+    if not ENV_FILE.exists():
+        return
+    for raw in ENV_FILE.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip()
+        v = v.strip().strip('"').strip("'")
+        if k and k not in os.environ:
+            os.environ[k] = v
+
+
+def _env_or(name: str, default: str) -> str:
+    val = os.environ.get(name, "").strip()
+    return val if val else default
+
+
+def _ensure_provider_prefix(model: str, implied_provider: str) -> str:
+    """If `model` already contains '/', use as-is (user explicitly chose a
+    provider — e.g. bedrock/..., vertex_ai/..., openrouter/...). Otherwise
+    prepend the implied provider prefix.
+
+    This lets a user write `MODEL_OPENAI=glm-5.1` (with an OpenAI-compatible
+    `OPENAI_API_BASE=https://your-gateway/...`) and get the correct
+    `openai/glm-5.1` model id automatically.
+    """
+    if "/" in model:
+        return model
+    return f"{implied_provider}/{model}"
+
+
+def render_config() -> Path:
+    """Build the litellm config YAML from env-var overrides.
+
+    Why render instead of using `os.environ/X` for everything?
+    - `model:` has no fallback chain — empty string would fail at runtime.
+    - We want to *omit* `api_base` entirely when blank, since some provider
+      handlers don't gracefully handle empty-string base URLs.
+    - PyYAML on the host is overkill for ~30 lines — we serialize by hand
+      so this script stays stdlib-only.
+    """
+    sonnet_model = _ensure_provider_prefix(
+        _env_or("MODEL_ANTHROPIC_SONNET", DEFAULT_MODEL_ANTHROPIC_SONNET),
+        implied_provider="anthropic",
+    )
+    haiku_model = _ensure_provider_prefix(
+        _env_or("MODEL_ANTHROPIC_HAIKU", DEFAULT_MODEL_ANTHROPIC_HAIKU),
+        implied_provider="anthropic",
+    )
+    openai_model = _ensure_provider_prefix(
+        _env_or("MODEL_OPENAI", DEFAULT_MODEL_OPENAI),
+        implied_provider="openai",
+    )
+    anthropic_base = os.environ.get("ANTHROPIC_API_BASE", "").strip()
+    openai_base = os.environ.get("OPENAI_API_BASE", "").strip()
+
+    def _emit_model(
+        model_name: str, model: str, key_env: str, base_env: str, has_base: bool
+    ) -> str:
+        lines = [
+            f"  - model_name: {model_name}",
+            "    litellm_params:",
+            f"      model: {model}",
+            f"      api_key: os.environ/{key_env}",
+        ]
+        # Only emit api_base when the user actually configured one in .env —
+        # avoids passing empty string downstream to provider clients.
+        if has_base:
+            lines.append(f"      api_base: os.environ/{base_env}")
+        return "\n".join(lines)
+
+    blocks = [
+        _emit_model(
+            "claude-sonnet-cache", sonnet_model,
+            "ANTHROPIC_API_KEY", "ANTHROPIC_API_BASE", bool(anthropic_base),
+        ),
+        _emit_model(
+            "claude-haiku-cache", haiku_model,
+            "ANTHROPIC_API_KEY", "ANTHROPIC_API_BASE", bool(anthropic_base),
+        ),
+        _emit_model(
+            "gpt-4o-mini-cache", openai_model,
+            "OPENAI_API_KEY", "OPENAI_API_BASE", bool(openai_base),
+        ),
+    ]
+    body = (
+        "# AUTOGENERATED by e2e/tools/proxy from e2e/.env at proxy-start time.\n"
+        "# Do not edit by hand — edit e2e/.env and re-run `e2e/tools/proxy start`.\n"
+        "#\n"
+        "# Resolved upstream model ids (after auto-prefixing):\n"
+        f"#   claude-sonnet-cache -> {sonnet_model}\n"
+        f"#   claude-haiku-cache  -> {haiku_model}\n"
+        f"#   gpt-4o-mini-cache   -> {openai_model}\n"
+        "model_list:\n"
+        + "\n\n".join(blocks)
+        + "\n\n"
+        "litellm_settings:\n"
+        "  callbacks: [\"prometheus\"]\n"
+        "  set_verbose: false\n"
+        "\n"
+        "general_settings:\n"
+        "  master_key: sk-e2e-test\n"
+    )
+    RENDERED_CONFIG.write_text(body)
+    return RENDERED_CONFIG
+
+
+def _compose(*args: str, capture: bool = False) -> subprocess.CompletedProcess:
+    """Run `docker compose -f ... -p ... <args>`.
+
+    `env_file` is also passed so ${VAR} interpolation inside the compose
+    file resolves from e2e/.env even when the shell does not have those
+    vars exported.
+    """
+    cmd = [
+        "docker",
+        "compose",
+        "-f",
+        str(COMPOSE_FILE),
+        "-p",
+        PROJECT_NAME,
+    ]
+    if ENV_FILE.exists():
+        cmd.extend(["--env-file", str(ENV_FILE)])
+    cmd.extend(args)
+    if capture:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    return subprocess.run(cmd, check=False)
+
+
+def _readiness_url() -> str:
+    return f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/health/readiness"
+
+
+def _proxy_url() -> str:
+    return f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+
+
+def _is_ready(timeout: float = 1.5) -> bool:
+    try:
+        with urllib.request.urlopen(_readiness_url(), timeout=timeout) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
+        return False
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    if _is_ready():
+        print(f"[proxy] already up at {_proxy_url()}", file=sys.stderr)
+        return 0
+
+    _load_dotenv()
+    rendered = render_config()
+    print(f"[proxy] rendered config -> {rendered}", file=sys.stderr)
+    print(f"[proxy] starting (compose project={PROJECT_NAME})...", file=sys.stderr)
+    rc = _compose("up", "-d").returncode
+    if rc != 0:
+        return rc
+
+    deadline = time.monotonic() + args.timeout
+    while time.monotonic() < deadline:
+        if _is_ready():
+            print(f"[proxy] ready at {_proxy_url()}", file=sys.stderr)
+            print(_proxy_url())
+            return 0
+        time.sleep(1.0)
+
+    print(
+        f"[proxy] FAILED to become ready within {args.timeout}s. "
+        f"Run `e2e/tools/proxy logs` to investigate.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def cmd_stop(_args: argparse.Namespace) -> int:
+    print(f"[proxy] stopping (compose project={PROJECT_NAME})...", file=sys.stderr)
+    return _compose("down", "--remove-orphans").returncode
+
+
+def cmd_status(_args: argparse.Namespace) -> int:
+    if _is_ready():
+        print(f"ready {_proxy_url()}")
+        return 0
+    print(f"down   {_proxy_url()}", file=sys.stderr)
+    return 1
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    extra = []
+    if args.tail:
+        extra.extend(["--tail", str(args.tail)])
+    if args.follow:
+        extra.append("-f")
+    return _compose("logs", *extra, "litellm").returncode
+
+
+def cmd_rebuild(_args: argparse.Namespace) -> int:
+    _load_dotenv()
+    render_config()
+    print("[proxy] rebuilding image (no cache)...", file=sys.stderr)
+    rc = _compose("build", "--no-cache").returncode
+    if rc != 0:
+        return rc
+    # Recreate container with the new image.
+    return _compose("up", "-d", "--force-recreate").returncode
+
+
+def cmd_build(_args: argparse.Namespace) -> int:
+    """Cached rebuild — fast path for iterating on local source changes.
+
+    `compose build` (without `--no-cache`) re-runs only the layers below
+    whichever layer the change invalidated, which for litellm is the
+    `COPY` of the source tree. Typical incremental edit: 30–90s, vs.
+    3–5 min for `cmd_rebuild`'s `--no-cache` path.
+
+    Use `rebuild` when:
+      - Pinning down a build-cache poisoning issue
+      - Verifying a clean install from scratch
+      - The Dockerfile itself changed (base image, system deps, pip
+        constraints) — `--no-cache` invalidates everything cleanly
+
+    Use `build` (this command) when:
+      - You only touched application code under `litellm/` and want it
+        in the running container ASAP
+    """
+    _load_dotenv()
+    render_config()
+    print("[proxy] building image (cached)...", file=sys.stderr)
+    rc = _compose("build").returncode
+    if rc != 0:
+        return rc
+    return _compose("up", "-d", "--force-recreate").returncode
+
+
+def cmd_url(_args: argparse.Namespace) -> int:
+    print(_proxy_url())
+    return 0
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    cmd_stop(args)
+    return cmd_start(args)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="e2e/tools/proxy",
+        description="docker compose lifecycle for the E2E litellm proxy",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    p_start = sub.add_parser("start", help="bring proxy up in background")
+    p_start.add_argument(
+        "--timeout",
+        type=float,
+        default=180.0,
+        help="seconds to wait for /health/readiness. Bumped to 180s because "
+        "Postgres healthcheck + prisma migrate deploy can add 30-60s on cold "
+        "start. (default: 180)",
+    )
+    p_start.set_defaults(func=cmd_start)
+
+    sub.add_parser("stop", help="tear proxy down").set_defaults(func=cmd_stop)
+
+    sub.add_parser("status", help="exit 0 if /health/readiness OK").set_defaults(
+        func=cmd_status
+    )
+
+    p_logs = sub.add_parser("logs", help="show container logs")
+    p_logs.add_argument("--tail", type=int, default=100)
+    p_logs.add_argument("-f", "--follow", action="store_true")
+    p_logs.set_defaults(func=cmd_logs)
+
+    sub.add_parser(
+        "build",
+        help="cached rebuild + force-recreate (fast; prefer for source edits)",
+    ).set_defaults(func=cmd_build)
+
+    sub.add_parser(
+        "rebuild",
+        help="full --no-cache rebuild + force-recreate (slow; for Dockerfile/dep changes)",
+    ).set_defaults(func=cmd_rebuild)
+
+    sub.add_parser("url", help="print proxy base URL").set_defaults(func=cmd_url)
+
+    p_restart = sub.add_parser("restart", help="stop + start")
+    p_restart.add_argument("--timeout", type=float, default=180.0)
+    p_restart.set_defaults(func=cmd_restart)
+
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

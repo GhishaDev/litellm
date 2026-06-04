@@ -5,6 +5,12 @@
 .env1
 .env2
 .claude
+
+# e2e: rendered config produced at proxy-start (contains derived model
+# names + env-var references; never edit by hand).
+e2e/_config/.litellm.rendered.yaml
+e2e/tools/__pycache__/
+e2e/_config/.*.swp
 .newenv
 newenv/*
 litellm/proxy/myenv/*
