@@ -228,6 +228,11 @@ def render_config(with_mock: bool = False) -> Path:
         "litellm_settings:\n"
         "  callbacks: [\"prometheus\"]\n"
         "  set_verbose: false\n"
+        # Upstream v1.84.0 flipped the default of require_auth_for_metrics_endpoint
+        # to True (gate /metrics behind master key). For the e2e harness the
+        # runbook (case 07) explicitly assumes anonymous /metrics access — keep
+        # the older posture here.
+        "  require_auth_for_metrics_endpoint: false\n"
         "\n"
         "general_settings:\n"
         "  master_key: sk-e2e-test\n"

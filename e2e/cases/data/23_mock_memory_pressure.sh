@@ -67,7 +67,20 @@ with open(out_path, "w") as f:
     json.dump(body, f)
 PY
 
-# 3. Reset mock counters so the assertion is unambiguous.
+# 3a. Drain any in-flight upstream calls leaked from prior cases (e.g. case 20
+#     A4 returns [DONE] to the client well before the mock-side handler
+#     finishes writing chunks). Without this guard, the leaked stream finishes
+#     during our burst window and bumps the counter, producing a false
+#     6-of-5 fail. Bounded wait — ~5s is more than enough for any sane
+#     in-flight stream.
+for _ in $(seq 1 50); do
+    in_flight=$(docker exec "$MOCK_CONTAINER" python3 -c \
+        "import urllib.request,json; print(json.load(urllib.request.urlopen('http://localhost:8080/__mock__/state'))['in_flight'])" 2>/dev/null)
+    [ "$in_flight" = "0" ] && break
+    sleep 0.1
+done
+
+# 3b. Reset mock counters so the assertion is unambiguous.
 docker exec "$MOCK_CONTAINER" python3 -c \
     "import urllib.request; urllib.request.urlopen('http://localhost:8080/__mock__/reset')" >/dev/null
 
