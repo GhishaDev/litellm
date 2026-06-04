@@ -101,6 +101,74 @@ project. The schedule below keeps drift bounded.
   sustainability discussion. Beyond 12 months, the fork begins to
   permanently diverge.
 
+## Conflict resolution discipline
+
+Lessons from the v1.87.0 bump (PRs #62, #63 rescued silent drops):
+`git checkout --theirs` / `--ours` are **whole-file replacements**, not
+conflict-region replacements. Used carelessly on a large file with
+parallel upstream evolution, they erase upstream's additions between
+our pin and HEAD without warning.
+
+**1. Default to manual 3-way merge.** For any file > 100 lines or any
+file upstream has actively touched (router.py, proxy_server.py,
+auth/*.py, networking.tsx, prometheus.py), resolve the conflict
+region(s) by hand. Read the upstream side AND our side, merge both
+intents.
+
+**2. `--ours` is acceptable when our patch ships its content via
+separate files.** Example: Wave 6c took `--ours` on
+`tests/test_litellm/proxy/{auth/test_model_checks,test_proxy_utils}.py`
+because the cherry-pick also created NEW test files (in
+`tests/test_litellm/proxy/discovery_endpoints/`) that carry the
+coverage. The existing test files stay verbatim from upstream.
+
+**3. `--theirs` is almost never correct.** Only use it when the file
+is one we created and upstream has never touched. For any upstream-
+authored file with parallel evolution, `--theirs` will silently lose
+upstream's diff between our pin and HEAD. If you find yourself
+reaching for `--theirs` on a large file, do this instead:
+
+```bash
+# Take upstream as the base, then re-apply our patch on top.
+git checkout HEAD -- <file>            # take upstream's version
+# Now open the cherry-picked commit and manually port the relevant
+# logic block(s) into upstream's evolved structure.
+git show <cherry-pick-sha> -- <file>   # see what to port
+# Edit <file> with the targeted additions, leaving upstream's other
+# changes intact.
+```
+
+**4. After any conflict resolution, verify three things:**
+
+```bash
+# A. Line-count sanity (did we lose upstream content?)
+git diff <pin>..HEAD --stat -- <file>
+
+# B. Build / import smoke
+python3 -c "import litellm; import litellm.proxy"      # Python core
+cd ui/litellm-dashboard && npm run build               # TypeScript
+python3 -c "from <module> import <symbols>"            # changed area
+
+# C. Targeted unit tests
+python3 -m pytest <changed_dir_or_file> -q
+npx vitest run <test_file>                             # for UI tests
+```
+
+Skipping any of these is what let PR #61 ship with a broken
+`networking.tsx` (Memory exports lost, Docker build broken).
+
+**5. PR description must document the resolution + evidence.** The
+PR template's "Conflict resolutions" section is required for any PR
+that resolved a merge conflict during cherry-pick. Paste:
+
+- The strategy used per file (manual / --ours / --theirs / N/A)
+- For `--ours`/`--theirs` uses: `git diff <pin>..HEAD --stat -- <file>`
+  output showing the line delta
+- The output of the build / test smoke from rule 4
+
+Without this evidence the reviewer (or future you) cannot tell that
+upstream content survived.
+
 ## Development workflow
 
 ```bash

@@ -16,6 +16,18 @@
 - [ ] Yes — upstream PR/issue: `<link>`
 - [ ] No — justification: `<reason this must land internally before / instead of upstream>`
 
+## Conflict resolutions (if any cherry-pick conflicted)
+
+See CLAUDE.md → "Conflict resolution discipline".
+
+For every file you resolved a merge conflict on, list:
+
+- file path + strategy: `manual 3-way` / `--ours` / `--theirs` / `N/A`
+- For `--ours` / `--theirs`: paste `git diff <pin>..HEAD --stat -- <file>` output
+- Smoke evidence: `python3 -c "import ..."` / `npm run build` exit codes
+
+Skip this section only if the PR has no cherry-picks or no conflicts.
+
 ## Relevant issues
 
 <!-- e.g. "Fixes #000" -->
