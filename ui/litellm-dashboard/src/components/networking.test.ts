@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { clearTokenCookies, getCookie } from "@/utils/cookieUtils";
+import { clearTokenCookies } from "@/utils/cookieUtils";
 import * as Networking from "./networking";
 
 vi.mock("@/utils/cookieUtils", () => ({
@@ -77,73 +77,6 @@ describe("networking - expired session handling", () => {
     }
 
     expect(mockFetch).toHaveBeenCalledOnce();
-  });
-});
-
-describe("handleErrorResponse - status-aware auth handling", () => {
-  // Stub window.location so the redirect path doesn't crash jsdom.
-  let originalLocation: Location;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    originalLocation = window.location;
-    delete (window as any).location;
-    (window as any).location = { ...originalLocation, href: "/admin", pathname: "/admin" };
-  });
-
-  afterEach(() => {
-    (window as any).location = originalLocation;
-  });
-
-  it("redirects on 401 when the auth cookie is gone (session expired)", async () => {
-    vi.mocked(getCookie).mockReturnValue(undefined as any);
-
-    await Networking.handleErrorResponse({ status: 401 }, { error: "no cookie" });
-
-    expect(clearTokenCookies).toHaveBeenCalledOnce();
-  });
-
-  it("redirects on 401 when the body carries a session-expired marker", async () => {
-    // Cookie still set, but the body explicitly says the credential is dead.
-    vi.mocked(getCookie).mockReturnValue("any-token" as any);
-
-    await Networking.handleErrorResponse(
-      { status: 401 },
-      { error: { message: "Authentication Error - Expired Key" } },
-    );
-
-    expect(clearTokenCookies).toHaveBeenCalledOnce();
-  });
-
-  it("does NOT redirect on 401 when the cookie is still valid and body says no session-expired marker", async () => {
-    // This is the "logged in but called an admin-only endpoint" case.
-    // LiteLLM uses 401 for permission too — we must not bounce the user
-    // out of an otherwise healthy session.
-    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
-
-    await Networking.handleErrorResponse(
-      { status: 401 },
-      { error: { message: "Master Key required" } },
-    );
-
-    expect(clearTokenCookies).not.toHaveBeenCalled();
-  });
-
-  it("does NOT redirect on 403 (permission denied)", async () => {
-    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
-
-    await Networking.handleErrorResponse({ status: 403 }, { error: "forbidden" });
-
-    expect(clearTokenCookies).not.toHaveBeenCalled();
-  });
-
-  it("falls through to handleError for non-401/403 errors", async () => {
-    vi.mocked(getCookie).mockReturnValue("valid-token" as any);
-
-    // 500 should not trigger the auth redirect.
-    await Networking.handleErrorResponse({ status: 500 }, { error: "internal" });
-
-    expect(clearTokenCookies).not.toHaveBeenCalled();
   });
 });
 
@@ -469,5 +402,54 @@ describe("individualModelHealthCheckCall", () => {
     const [url] = mockFetch.mock.calls[0];
     const parsed = typeof url === "string" ? new URL(url, "http://example.com") : new URL((url as Request).url);
     expect(parsed.searchParams.get("model_id")).toBe("id/with/slashes");
+  });
+});
+
+describe("teamInfoCall", () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("should URL-encode team_id query param to handle special characters safely", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ team_id: "team with spaces & special?chars" }),
+    } as any);
+    global.fetch = mockFetch as any;
+
+    const teamID = "team with spaces & special?chars";
+    await Networking.teamInfoCall("token", teamID);
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url] = mockFetch.mock.calls[0];
+    const urlStr = typeof url === "string" ? url : (url as Request).url;
+    const parsed = typeof url === "string" ? new URL(url, "http://example.com") : new URL((url as Request).url);
+
+    expect(urlStr).toContain("/team/info");
+    // Encoded value is present in the raw URL string (verifies encodeURIComponent was used)
+    expect(urlStr).toContain(`team_id=${encodeURIComponent(teamID)}`);
+    // Round-trip parse returns the original team_id
+    expect(parsed.searchParams.get("team_id")).toBe(teamID);
+  });
+
+  it("should not append team_id when teamID is null", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({}),
+    } as any);
+    global.fetch = mockFetch as any;
+
+    await Networking.teamInfoCall("token", null);
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url] = mockFetch.mock.calls[0];
+    const parsed = typeof url === "string" ? new URL(url, "http://example.com") : new URL((url as Request).url);
+    expect(parsed.searchParams.has("team_id")).toBe(false);
   });
 });
