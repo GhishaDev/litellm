@@ -55,6 +55,14 @@ PROVIDER_MODEL_DEFAULTS = {
     "anthropic": "claude-sonnet-cache",
     "anthropic-haiku": "claude-haiku-cache",
     "openai": "gpt-4o-mini-cache",
+    # In-network mock targets, registered when proxy is started with
+    # `e2e/tools/proxy start --with-mock`. Stream + non-stream both work,
+    # `cache_control` markers are accepted but no-op (mock doesn't model
+    # prompt cache semantics). See e2e/_config/mock_provider.py for full
+    # control surface (X-Mock-* headers).
+    "mock-anthropic": "mock-anthropic",
+    "mock-openai": "mock-openai",
+    "mock-gemini": "mock-gemini",
 }
 
 
@@ -90,8 +98,14 @@ def build_messages(
     ttl: str,
     user_msg: str,
 ) -> List[Dict[str, Any]]:
-    """Anthropic structured `content` array with cache_control vs OpenAI plain."""
-    if provider.startswith("anthropic") and cache == "ephemeral":
+    """Anthropic structured `content` array with cache_control vs OpenAI plain.
+
+    mock-anthropic uses the same Anthropic-shape envelope so callers can
+    exercise the cache_control transform path; the mock just doesn't
+    model the cache token accounting.
+    """
+    is_anthropic_shape = provider.startswith("anthropic") or provider == "mock-anthropic"
+    if is_anthropic_shape and cache == "ephemeral":
         cache_control: Dict[str, Any] = {"type": "ephemeral"}
         if ttl == "1h":
             cache_control["ttl"] = "1h"
@@ -141,8 +155,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="e2e/tools/call")
     p.add_argument(
         "--provider",
-        choices=["anthropic", "anthropic-haiku", "openai"],
+        choices=[
+            "anthropic",
+            "anthropic-haiku",
+            "openai",
+            "mock-anthropic",
+            "mock-openai",
+            "mock-gemini",
+        ],
         required=True,
+        help="Routing target. mock-* values require `proxy start --with-mock`.",
     )
     p.add_argument(
         "--model",

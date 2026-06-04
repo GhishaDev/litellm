@@ -8,6 +8,13 @@
 #   e2e/tools/run-all-cases                # full suite, ~$0.05 in provider cost
 #   e2e/tools/run-all-cases --skip-paid    # skip cases that call real providers
 #                                          # (10, 12 only — they're free)
+#   e2e/tools/run-all-cases --mock-only    # only Tier=mock|both cases (see
+#                                          # cases/README.md tier column),
+#                                          # against the in-network mock
+#                                          # provider — zero provider cost.
+#                                          # Caller is responsible for starting
+#                                          # the proxy with `proxy start --with-mock`
+#                                          # and pointing API_BASE env to the mock.
 #
 # Convention for adding a new case:
 #   1. Drop a fixture under e2e/cases/data/NN_*.sh or NN_*.py
@@ -25,14 +32,29 @@ DB_CONTAINER="${DB_CONTAINER:-litellm-e2e-db}"
 PROXY_CONTAINER="${PROXY_CONTAINER:-litellm-e2e}"
 MASTER_KEY="${MASTER_KEY:-sk-e2e-test}"
 SKIP_PAID=0
+MOCK_ONLY=0
 for arg in "$@"; do
     case "$arg" in
         --skip-paid) SKIP_PAID=1 ;;
+        --mock-only) MOCK_ONLY=1 ;;
         -h|--help)
-            sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
     esac
 done
+
+# Tier=real cases that --mock-only skips. See e2e/cases/README.md index.
+# 04 + 06 are Tier=both (cache metrics ABSENT — provable on mock); the
+# rest of 01-09 verify cache TOKEN VALUES that real providers compute.
+REAL_ONLY_CASES="01 02 03 05 08 09 19"
+
+is_real_only() {
+    local n="$1"
+    for r in $REAL_ONLY_CASES; do
+        [ "$r" = "$n" ] && return 0
+    done
+    return 1
+}
 
 PASS=0; FAIL=0; SKIP=0
 RESULTS=()
@@ -358,34 +380,118 @@ case_18() {
     fi
 }
 
+# Case 23 needs the mock; --skip-paid alone shouldn't skip it (it's free),
+# but it does require `--with-mock` to be active. The runner's mock-only
+# preflight is the gate; outside of --mock-only we still attempt it and let
+# it fail-fast if the mock isn't up.
+case_23() {
+    echo "[23] mock memory pressure (CI-light: 5 concurrent streams)..."
+    local out=/tmp/e2e_case23.out
+    bash e2e/cases/data/23_mock_memory_pressure.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "23 mock-memory-pressure: $(grep '^PASS' "$out" | head -1 | cut -c1-100)"
+    elif [ "$rc" -eq 77 ]; then
+        skip "23 mock-memory-pressure" "$(grep -m1 SKIP "$out")"
+    else
+        fail "23 mock-memory-pressure" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
+
 # Pre-flight: proxy must be ready
 if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
         "$PROXY/health/readiness" 2>/dev/null | grep -q '^2'; then
     if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
             "$PROXY/metrics" 2>/dev/null | grep -q '^2\|^3'; then
         echo "FATAL: proxy at $PROXY is not responding."
-        echo "Try: e2e/tools/proxy start"
+        if [ "$MOCK_ONLY" -eq 1 ]; then
+            echo "Try: e2e/tools/proxy start --with-mock"
+        else
+            echo "Try: e2e/tools/proxy start"
+        fi
+        exit 2
+    fi
+fi
+
+# Mock-only preflight: verify the mock container is up AND the
+# ANTHROPIC/OPENAI/GEMINI_API_BASE env vars baked into the rendered
+# config actually point at the mock. Without that redirect, cases that
+# call `claude-sonnet-cache` / `gpt-4o-mini-cache` etc. hit real
+# providers and either burn money or fail with auth errors.
+if [ "$MOCK_ONLY" -eq 1 ]; then
+    # 1. Mock container running?
+    if ! docker ps --format '{{.Names}}' 2>/dev/null \
+            | grep -qx 'litellm-e2e-mock'; then
+        echo "FATAL: --mock-only requires the litellm-e2e-mock sidecar."
+        echo "Restart the proxy with the mock profile:"
+        echo "  e2e/tools/proxy stop && e2e/tools/proxy start --with-mock"
+        exit 2
+    fi
+    # 2. Rendered config must redirect at least one real-provider api_base
+    #    to the mock. Cheapest probe: grep the rendered yaml the proxy
+    #    just loaded.
+    rendered=e2e/_config/.litellm.rendered.yaml
+    if [ ! -f "$rendered" ] || \
+       ! grep -qE "http://mock:8080|os.environ/ANTHROPIC_API_BASE" "$rendered"; then
+        echo "FATAL: --mock-only needs ANTHROPIC_API_BASE / OPENAI_API_BASE / GEMINI_API_BASE"
+        echo "to point at the mock so cases like 13/14/18/20/22 don't hit real providers."
+        echo "Set in e2e/.env then restart the proxy:"
+        cat <<'EOF'
+  ANTHROPIC_API_BASE=http://mock:8080
+  OPENAI_API_BASE=http://mock:8080/v1
+  GEMINI_API_BASE=http://mock:8080/v1beta
+  # tuned so case 13's TTFT/streaming_phase assertions pass:
+  MOCK_TTFT_MS=500
+  MOCK_TPS=50
+  MOCK_CHUNKS=200
+
+  e2e/tools/proxy stop && e2e/tools/proxy start --with-mock
+EOF
+        exit 2
+    fi
+    # 3. Heuristic: make sure ANTHROPIC_API_BASE actually points at mock.
+    #    The container reads this from the env_file. Inspect it via the
+    #    running container so we don't depend on shell-side state.
+    base=$(docker exec litellm-e2e bash -c 'echo "${ANTHROPIC_API_BASE:-}"' 2>/dev/null)
+    if ! echo "$base" | grep -q 'mock:8080'; then
+        echo "FATAL: --mock-only: ANTHROPIC_API_BASE inside the proxy container is '$base',"
+        echo "not pointing at http://mock:8080. The proxy will hit a real Anthropic endpoint."
+        echo "Edit e2e/.env (see fix instructions above), then:"
+        echo "  e2e/tools/proxy stop && e2e/tools/proxy start --with-mock"
         exit 2
     fi
 fi
 
 echo "============ Running e2e case suite against $PROXY ============"
+[ "$MOCK_ONLY" -eq 1 ] && echo "(--mock-only: skipping Tier=real cases: $REAL_ONLY_CASES)"
 echo
 
-case_01
-case_02
-case_03
+# Helper that runs case_NN OR emits a skip if MOCK_ONLY and NN is in
+# REAL_ONLY_CASES. SKIP_PAID gates are still honored, layered on top.
+_dispatch() {
+    local n="$1" label="$2"
+    if [ "$MOCK_ONLY" -eq 1 ] && is_real_only "$n"; then
+        skip "$n $label" "Tier=real — requires real provider semantics"
+        return
+    fi
+    "case_$n"
+}
+
+_dispatch 01 anthropic-5m-creation
+_dispatch 02 anthropic-1h-creation
+_dispatch 03 anthropic-cache-read
 case_04
 if [ "$SKIP_PAID" -eq 1 ]; then
     skip "05 openai-cache-read"   "skipped (--skip-paid)"
     skip "06 openai-no-creation"  "skipped (--skip-paid; depends on 05)"
 else
-    case_05
+    _dispatch 05 openai-cache-read
     case_06
 fi
 case_07
-case_08
-case_09
+_dispatch 08 virtual-key-labels
+_dispatch 09 per-team-isolation
 case_10
 case_11
 if [ "$SKIP_PAID" -eq 1 ]; then
@@ -401,6 +507,13 @@ if [ "$SKIP_PAID" -eq 1 ]; then
     skip "18 public-req-middleware" "skipped (--skip-paid)"
 else
     case_18
+fi
+
+# Case 23 (mock memory pressure) only runs when --mock-only is in effect.
+# Outside that mode the litellm-e2e-mock sidecar may not be up; the fixture
+# fails-fast with a clear message rather than masking it as SKIP.
+if [ "$MOCK_ONLY" -eq 1 ]; then
+    case_23
 fi
 
 echo
