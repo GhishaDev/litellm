@@ -49,7 +49,7 @@ const fetchAccessGroups = async (
   if (!response.ok) {
     const errorData = await response.json();
     const errorMessage = deriveErrorMessage(errorData);
-    handleError(errorMessage);
+    handleError(errorData);
     throw new Error(errorMessage);
   }
 
