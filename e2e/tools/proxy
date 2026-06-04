@@ -121,7 +121,8 @@ def render_config(with_mock: bool = False) -> Path:
     )
 
     def _emit_model(
-        model_name: str, model: str, key_env: str, base_env: str, has_base: bool
+        model_name: str, model: str, key_env: str, base_env: str, has_base: bool,
+        returned_model_name: str = "",
     ) -> str:
         lines = [
             f"  - model_name: {model_name}",
@@ -133,6 +134,11 @@ def render_config(with_mock: bool = False) -> Path:
         # avoids passing empty string downstream to provider clients.
         if has_base:
             lines.append(f"      api_base: os.environ/{base_env}")
+        # Per-deployment override for the `model` field returned to clients.
+        # Exercised by e2e case 20 against the dedicated `claude-renamed`
+        # deployment below.
+        if returned_model_name:
+            lines.append(f"      returned_model_name: {returned_model_name}")
         return "\n".join(lines)
 
     blocks = [
@@ -147,6 +153,15 @@ def render_config(with_mock: bool = False) -> Path:
         _emit_model(
             "gpt-4o-mini-cache", openai_model,
             "OPENAI_API_KEY", "OPENAI_API_BASE", bool(openai_base),
+        ),
+        # Dedicated deployment for case 20: same upstream as claude-sonnet-cache
+        # but with returned_model_name set so we can assert the override applies
+        # across all four (streaming + non-streaming) × (/v1/messages + /v1/chat/completions)
+        # paths without polluting other cases that compare model strings.
+        _emit_model(
+            "claude-renamed", sonnet_model,
+            "ANTHROPIC_API_KEY", "ANTHROPIC_API_BASE", bool(anthropic_base),
+            returned_model_name="public-name-for-clients",
         ),
     ]
     # Dedicated deployment for case 22: gemini/ provider with a custom
@@ -194,6 +209,7 @@ def render_config(with_mock: bool = False) -> Path:
         f"#   claude-sonnet-cache -> {sonnet_model}\n"
         f"#   claude-haiku-cache  -> {haiku_model}\n"
         f"#   gpt-4o-mini-cache   -> {openai_model}\n"
+        + f"#   claude-renamed      -> {sonnet_model} (returned_model_name=public-name-for-clients; case 20)\n"
         + (
             f"#   gemini-custom-base  -> {gemini_model} (case 22; GEMINI_API_BASE={gemini_base or '<unset>'})\n"
             if gemini_key_set
