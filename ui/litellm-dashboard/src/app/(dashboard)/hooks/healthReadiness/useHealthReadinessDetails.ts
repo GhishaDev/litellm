@@ -12,6 +12,11 @@ export interface HealthReadinessDetailsResponse {
   db?: string;
   cache?: unknown;
   litellm_version?: string;
+  /** Upstream LiteLLM package version this build is based on. Diverges from
+   *  litellm_version on internal releases (e.g. vX.Y.Z-internal.N). */
+  litellm_base_version?: string;
+  /** Short git sha of the internal build (empty when unset). */
+  litellm_build_sha?: string;
   success_callbacks?: string[];
   use_aiohttp_transport?: boolean;
   log_level?: string;

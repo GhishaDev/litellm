@@ -89,6 +89,9 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            LITELLM_BUILD_TAG=${{ steps.version.outputs.tag }}
+            LITELLM_BUILD_SHA=${{ steps.version.outputs.git_sha }}
           tags: |
             ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
             ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-${{ steps.version.outputs.git_sha }}
