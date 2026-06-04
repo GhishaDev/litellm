@@ -38,6 +38,21 @@ class PassThroughStreamingHandler:
     ):
         raw_bytes: List[bytes] = []
         logging_scheduled = False
+
+        # Use the true request-entry timestamp held on the logging
+        # object when it's earlier than the start_time passed in. The
+        # caller's start_time is captured at the streaming-iterator
+        # constructor, which runs AFTER the upstream HTTP response
+        # has already been received — too late to represent when the
+        # client's request entered the proxy. Without this override,
+        # SpendLogs.startTime is artificially deflated by the full
+        # TTFT, making `endTime - startTime` shorter than reality.
+        true_start = getattr(litellm_logging_obj, "start_time", None)
+        if isinstance(true_start, datetime) and (
+            not isinstance(start_time, datetime) or true_start < start_time
+        ):
+            start_time = true_start
+
         model_name = PassThroughStreamingHandler._extract_model_for_cost_injection(
             request_body=request_body,
             url_route=url_route,
@@ -54,10 +69,24 @@ class PassThroughStreamingHandler:
             and bool(model_name)
             and endpoint_type in (EndpointType.VERTEX_AI, EndpointType.ANTHROPIC)
         )
+
+        def _record_ttft_on_first_chunk() -> None:
+            # Record TTFT on the first chunk that arrives so spend_logs
+            # `completionStartTime` reflects real time-to-first-token.
+            # Without this, the fallback at
+            # litellm_logging.py:1834-1837 sets completion_start_time =
+            # end_time, making TTFT equal to total Duration for every
+            # passthrough streaming request.
+            if litellm_logging_obj.completion_start_time is None:
+                litellm_logging_obj._update_completion_start_time(
+                    completion_start_time=datetime.now()
+                )
+
         try:
             if not cost_injection_active:
                 # Hot path: just buffer for end-of-stream logging and forward.
                 async for chunk in response.aiter_bytes():
+                    _record_ttft_on_first_chunk()
                     raw_bytes.append(chunk)
                     yield chunk
             else:
@@ -67,6 +96,7 @@ class PassThroughStreamingHandler:
                 assert model_name is not None
                 resolved_model_name: str = model_name
                 async for chunk in response.aiter_bytes():
+                    _record_ttft_on_first_chunk()
                     raw_bytes.append(chunk)
                     if endpoint_type == EndpointType.VERTEX_AI:
                         if "streamRawPredict" in url_route or "rawPredict" in url_route:
