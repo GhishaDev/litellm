@@ -1,10 +1,24 @@
+<!--
+  Internal fork PR template. See `CLAUDE.md` → "Fork tier classification".
+  Pick the tier first — it determines whether this PR should target
+  the ship branch or upstream BerriAI/litellm.
+-->
+
+## Tier classification
+
+- [ ] **A** — Company-specific logic (`litellm_extras/` only)
+- [ ] **B** — Internal infra / branding (CI, Dockerfile, e2e, internal navbar version)
+- [ ] **C** — Universal bug fix in `litellm/` core
+- [ ] **D** — Universal mechanism + company opinion in `litellm/` core
+
+**If Tier C or D, did you try upstream first?**
+
+- [ ] Yes — upstream PR/issue: `<link>`
+- [ ] No — justification: `<reason this must land internally before / instead of upstream>`
+
 ## Relevant issues
 
 <!-- e.g. "Fixes #000" -->
-
-## Linear ticket
-
-<!-- if you are an internal contributor, add the Linear ticket e.g. "Resolves LIT-1234" to magically link the Linear ticket to the GitHub PR -->
 
 ## Pre-Submission checklist
 
