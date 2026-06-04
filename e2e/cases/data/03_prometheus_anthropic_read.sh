@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regression fixture for Case 03 — Anthropic prompt-cache READ on the
-# second request increments litellm_prompt_cache_read_tokens_metric.
+# second request increments litellm_input_cached_tokens_metric.
 #
 # Pattern:
 #   1. First call with seed S + stable user_id U creates a cache entry
@@ -29,7 +29,7 @@ PROXY_URL="${PROXY_URL:-http://localhost:4011}"
 snap() {
     local provider="$1"
     curl -sSL "$PROXY_URL/metrics" 2>/dev/null \
-        | awk -v p="^litellm_prompt_cache_read_tokens_metric_total{.*api_provider=\"${provider}\"" \
+        | awk -v p="^litellm_input_cached_tokens_metric_total{.*api_provider=\"${provider}\"" \
             '$0 ~ p { for(i=1;i<=NF;i++) if($i+0==$i) val=$i } END { print (val ? val : 0) }'
 }
 

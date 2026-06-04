@@ -23,7 +23,7 @@ Design notes
       "scraped_at": "2026-05-14T11:38:00Z",
       "proxy_url": "http://localhost:4011",
       "metrics": {
-        "litellm_prompt_cache_read_tokens_metric": [
+        "litellm_input_cached_tokens_metric": [
           { "labels": {"model": "...", ...}, "value": 4096.0 }
         ],
         ...

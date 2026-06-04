@@ -62,11 +62,11 @@ e2e/tools/metrics snapshot > /tmp/m_after_09.json
 # 6. Verify TWO distinct series — one per team_alias
 echo "--- team_a delta ---"
 e2e/tools/metrics diff /tmp/m_before_09.json /tmp/m_after_09.json \
-    --metric litellm_prompt_cache_creation_tokens_metric \
+    --metric litellm_input_cache_creation_tokens_metric \
     --label team_alias=$TEAM_A_ALIAS
 echo "--- team_b delta ---"
 e2e/tools/metrics diff /tmp/m_before_09.json /tmp/m_after_09.json \
-    --metric litellm_prompt_cache_creation_tokens_metric \
+    --metric litellm_input_cache_creation_tokens_metric \
     --label team_alias=$TEAM_B_ALIAS
 
 # 7. Cleanup

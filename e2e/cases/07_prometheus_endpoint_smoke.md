@@ -34,8 +34,8 @@ curl -s "$(e2e/tools/proxy url)/metrics" | \
 - Step 2: snapshot key count > 30 (proxy emits many metrics; exact
   number depends on traffic)
 - Step 3: **two** lines printed, one per new metric, each starting with
-  `# HELP litellm_prompt_cache_read_tokens_metric` and
-  `# HELP litellm_prompt_cache_creation_tokens_metric`
+  `# HELP litellm_input_cached_tokens_metric` and
+  `# HELP litellm_input_cache_creation_tokens_metric`
 
 ## What this proves vs doesn't
 

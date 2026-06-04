@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from dataclasses import replace as dataclass_replace
 from datetime import datetime, timedelta
 from typing import (
     TYPE_CHECKING,
@@ -1291,6 +1292,13 @@ class PrometheusLogger(CustomLogger):
             label_context=label_context,
         )
 
+        # provider-side prompt cache token metrics (Anthropic / OpenAI / Gemini / DeepSeek)
+        self._increment_prompt_cache_token_metrics(
+            standard_logging_payload=standard_logging_payload,  # type: ignore
+            enum_values=enum_values,
+            label_context=label_context,
+        )
+
         # increment litellm_proxy_total_requests_metric for all successful requests
         # (both streaming and non-streaming) in this single location to prevent
         # double-counting that occurs when async_post_call_success_hook also increments
@@ -1393,15 +1401,10 @@ class PrometheusLogger(CustomLogger):
                     else None
                 ),
             ),
-            (
-                self.litellm_input_cache_creation_tokens_metric,
-                "litellm_input_cache_creation_tokens_metric",
-                (
-                    prompt_details.get("cache_creation_tokens")
-                    if isinstance(prompt_details, dict)
-                    else None
-                ),
-            ),
+            # NOTE: litellm_input_cache_creation_tokens_metric is emitted by
+            # `_increment_prompt_cache_token_metrics` instead — it splits by
+            # the `cache_ttl` label (Anthropic 5m vs 1h) which the generic
+            # detail-token loop can't represent.
             (
                 self.litellm_input_audio_tokens_metric,
                 "litellm_input_audio_tokens_metric",
@@ -1491,6 +1494,69 @@ class PrometheusLogger(CustomLogger):
                 "litellm_cache_misses_metric",
                 enum_values,
                 label_context=label_context,
+            )
+
+    def _increment_prompt_cache_token_metrics(
+        self,
+        standard_logging_payload: StandardLoggingPayload,
+        enum_values: UserAPIKeyLabelValues,
+        label_context: Optional[PrometheusLabelFactoryContext] = None,
+    ) -> None:
+        """
+        Emit `litellm_input_cache_creation_tokens_metric` with the `cache_ttl`
+        label (Anthropic 5m / 1h ephemeral split, or `unknown` when the
+        response lacks the breakdown).
+
+        The read side (`litellm_input_cached_tokens_metric`) is owned by
+        `_increment_detail_token_metrics`; cache_creation is intentionally
+        removed from that loop and routed here so the per-TTL split is
+        preserved — Anthropic charges 2x for 1h cache writes vs 5m, and
+        billing dashboards need to attribute that volume correctly.
+
+        Data source: standard_logging_payload.metadata.usage_object
+        .prompt_tokens_details.cache_creation_token_details. Non-zero values
+        only (matches the rest of the detail-metric policy).
+        """
+        metadata = standard_logging_payload.get("metadata") or {}
+        usage_object = metadata.get("usage_object") or {}
+        prompt_tokens_details = usage_object.get("prompt_tokens_details") or {}
+        if not isinstance(prompt_tokens_details, dict):
+            return
+
+        cache_creation_tokens = prompt_tokens_details.get("cache_creation_tokens") or 0
+        if not cache_creation_tokens or cache_creation_tokens <= 0:
+            return
+
+        ttl_details = prompt_tokens_details.get("cache_creation_token_details") or {}
+        if isinstance(ttl_details, dict) and (
+            ttl_details.get("ephemeral_5m_input_tokens") is not None
+            or ttl_details.get("ephemeral_1h_input_tokens") is not None
+        ):
+            # Provider gave a 5m/1h split — emit one series per non-zero TTL bucket.
+            # NOTE: derived enum_values requires label_context=None per
+            # prometheus_label_factory's identity check.
+            for ttl_label, amount in (
+                ("5m", ttl_details.get("ephemeral_5m_input_tokens") or 0),
+                ("1h", ttl_details.get("ephemeral_1h_input_tokens") or 0),
+            ):
+                if amount and amount > 0:
+                    PrometheusLogger._inc_labeled_counter(
+                        self,
+                        self.litellm_input_cache_creation_tokens_metric,
+                        "litellm_input_cache_creation_tokens_metric",
+                        dataclass_replace(enum_values, cache_ttl=ttl_label),
+                        label_context=None,
+                        amount=float(amount),
+                    )
+        else:
+            # Older Anthropic API (or other provider) — no TTL breakdown.
+            PrometheusLogger._inc_labeled_counter(
+                self,
+                self.litellm_input_cache_creation_tokens_metric,
+                "litellm_input_cache_creation_tokens_metric",
+                dataclass_replace(enum_values, cache_ttl="unknown"),
+                label_context=None,
+                amount=float(cache_creation_tokens),
             )
 
     async def _increment_remaining_budget_metrics(

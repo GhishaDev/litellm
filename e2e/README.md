@@ -195,11 +195,11 @@ e2e/tools/call --provider anthropic --user-id user-42 # sticky upstream LB
 
 # Metrics
 e2e/tools/metrics snapshot                              # → JSON
-e2e/tools/metrics get litellm_prompt_cache_read_tokens_metric
-e2e/tools/metrics get litellm_prompt_cache_read_tokens_metric \
+e2e/tools/metrics get litellm_input_cached_tokens_metric
+e2e/tools/metrics get litellm_input_cached_tokens_metric \
     --label api_provider=anthropic
 e2e/tools/metrics diff before.json after.json \
-    --metric litellm_prompt_cache_creation_tokens_metric \
+    --metric litellm_input_cache_creation_tokens_metric \
     --label cache_ttl=5m
 
 # Virtual keys (needs DB)

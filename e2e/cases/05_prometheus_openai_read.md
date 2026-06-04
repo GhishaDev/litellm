@@ -7,7 +7,7 @@ OpenAI does prompt caching automatically when a prompt is ≥ 1024 tokens
 `cache_control` marker — caching is implicit. Two identical long
 requests should yield `prompt_tokens_details.cached_tokens > 0` on the
 second, and that value should appear in
-`litellm_prompt_cache_read_tokens_metric{api_provider="openai"}`.
+`litellm_input_cached_tokens_metric{api_provider="openai"}`.
 
 ## Preconditions
 
@@ -38,7 +38,7 @@ e2e/tools/metrics snapshot > /tmp/m_after.json
 
 # 4. Diff
 e2e/tools/metrics diff /tmp/m_before.json /tmp/m_after.json \
-    --metric litellm_prompt_cache_read_tokens_metric \
+    --metric litellm_input_cached_tokens_metric \
     --label api_provider=openai
 ```
 

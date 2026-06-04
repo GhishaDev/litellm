@@ -47,12 +47,12 @@ e2e/tools/metrics snapshot > /tmp/m_after_08.json
 # 6. Inspect the new sample: it should carry the EXPECTED_HASH and the
 #    alias we set. Filter by alias to narrow down.
 e2e/tools/metrics diff /tmp/m_before_08.json /tmp/m_after_08.json \
-    --metric litellm_prompt_cache_creation_tokens_metric \
+    --metric litellm_input_cache_creation_tokens_metric \
     --label api_key_alias=$ALIAS
 
 # 7. (Optional) confirm the hashed_api_key matches
 e2e/tools/metrics diff /tmp/m_before_08.json /tmp/m_after_08.json \
-    --metric litellm_prompt_cache_creation_tokens_metric \
+    --metric litellm_input_cache_creation_tokens_metric \
     --label hashed_api_key=$EXPECTED_HASH
 
 # 8. Cleanup

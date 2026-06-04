@@ -26,9 +26,9 @@ e2e/tools/metrics snapshot > /tmp/m_after.json
 
 jq '.response.usage' /tmp/call_response.json
 e2e/tools/metrics diff /tmp/m_before.json /tmp/m_after.json \
-    --metric litellm_prompt_cache_read_tokens_metric
+    --metric litellm_input_cached_tokens_metric
 e2e/tools/metrics diff /tmp/m_before.json /tmp/m_after.json \
-    --metric litellm_prompt_cache_creation_tokens_metric
+    --metric litellm_input_cache_creation_tokens_metric
 ```
 
 ## Expected

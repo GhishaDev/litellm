@@ -184,6 +184,7 @@ class UserAPIKeyLabelNames(Enum):
     STREAM = "stream"
     ORG_ID = "org_id"
     ORG_ALIAS = "org_alias"
+    CACHE_TTL = "cache_ttl"
 
 
 DEFINED_PROMETHEUS_METRICS = Literal[
@@ -462,7 +463,12 @@ class PrometheusMetricLabels:
     # populated by the provider (e.g. Anthropic cache_read_input_tokens,
     # OpenAI prompt_tokens_details.cached_tokens, reasoning_tokens, audio_tokens).
     litellm_input_cached_tokens_metric = litellm_input_tokens_metric
-    litellm_input_cache_creation_tokens_metric = litellm_input_tokens_metric
+    # `cache_ttl` distinguishes Anthropic 5m vs 1h ephemeral cache writes
+    # (provider charges 2x for 1h vs 5m). `unknown` when the response lacks
+    # the per-TTL breakdown.
+    litellm_input_cache_creation_tokens_metric = litellm_input_tokens_metric + [
+        UserAPIKeyLabelNames.CACHE_TTL.value
+    ]
     litellm_input_audio_tokens_metric = litellm_input_tokens_metric
     litellm_output_reasoning_tokens_metric = litellm_output_tokens_metric
     litellm_output_audio_tokens_metric = litellm_output_tokens_metric
@@ -809,6 +815,7 @@ class UserAPIKeyLabelValues:
     stream: Optional[str] = None
     org_id: Optional[str] = None
     org_alias: Optional[str] = None
+    cache_ttl: Optional[str] = None
 
     # Added for test compatibility.
     def __init__(self, **kwargs: Any) -> None:
