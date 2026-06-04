@@ -1,0 +1,116 @@
+name: Push to Huawei Cloud SWR
+
+on:
+  push:
+    tags:
+      - 'v*-internal.*'
+      - 'v*-ghisha.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to publish (e.g. v1.83.10-ghisha.1). Does not need to be a git tag.'
+        required: true
+        type: string
+
+env:
+  SWR_REGION: ap-southeast-3
+  SWR_REGISTRY: swr.ap-southeast-3.myhuaweicloud.com
+  SWR_ORG: ghisha
+  IMAGE_NAME: ghisha-gateway
+
+jobs:
+  build-and-push:
+    name: Build and push to SWR
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
+
+      - name: Resolve tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          # Strip -internal.N or -ghisha.N suffix to get base version
+          BASE_VERSION=$(echo "$TAG" | sed -E 's/-(internal|ghisha)\.[0-9]+$//')
+          GIT_SHA=$(git rev-parse --short HEAD)
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "base_version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "git_sha=${GIT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Tag: ${TAG}, Base: ${BASE_VERSION}, SHA: ${GIT_SHA}"
+
+      - name: Verify tag is reachable from ship/* branch
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git fetch origin '+refs/heads/ship/*:refs/remotes/origin/ship/*' --no-tags
+          CONTAINING=$(git branch -r --contains "${TAG}" | grep 'origin/ship/' || true)
+          if [ -z "${CONTAINING}" ]; then
+            echo "::error::Tag ${TAG} is not on any ship/* branch. Refusing to publish."
+            exit 1
+          fi
+          echo "Tag is on:${CONTAINING}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Huawei Cloud SWR
+        env:
+          HUAWEI_AK: ${{ secrets.HUAWEI_AK }}
+          HUAWEI_TOKEN: ${{ secrets.HUAWEI_TOKEN }}
+        run: |
+          echo "$HUAWEI_TOKEN" | docker login ${{ env.SWR_REGISTRY }} -u "${{ env.SWR_REGION }}@$HUAWEI_AK" --password-stdin
+
+      - name: Build and push to SWR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          build-args: |
+            LITELLM_BUILD_TAG=${{ steps.version.outputs.tag }}
+            LITELLM_BUILD_SHA=${{ steps.version.outputs.git_sha }}
+          tags: |
+            ${{ env.SWR_REGISTRY }}/${{ env.SWR_ORG }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+            ${{ env.SWR_REGISTRY }}/${{ env.SWR_ORG }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-${{ steps.version.outputs.git_sha }}
+            ${{ env.SWR_REGISTRY }}/${{ env.SWR_ORG }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.base_version }}-stable
+          labels: |
+            org.opencontainers.image.title=litellm
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.version.outputs.git_sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          # SWR image pushed
+
+          | Tag | Image |
+          |---|---|
+          | Internal release  | \`${{ env.SWR_REGISTRY }}/${{ env.SWR_ORG }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}\` |
+          | + git sha (audit) | \`${{ env.SWR_REGISTRY }}/${{ env.SWR_ORG }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}-${{ steps.version.outputs.git_sha }}\` |
+          | Rolling stable    | \`${{ env.SWR_REGISTRY }}/${{ env.SWR_ORG }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.base_version }}-stable\` |
+
+          **Pull:**
+          \`\`\`bash
+          docker pull ${{ env.SWR_REGISTRY }}/${{ env.SWR_ORG }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}
+          \`\`\`
+          EOF
