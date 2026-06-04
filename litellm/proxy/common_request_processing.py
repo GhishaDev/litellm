@@ -2110,6 +2110,33 @@ class ProxyBaseLLMRequestProcessing:
                         "async_data_generator: received streaming chunk - %s", chunk
                     )
 
+                # Per-deployment `returned_model_name` override for Anthropic
+                # /v1/messages SSE: must run BEFORE the fast_path short-circuit
+                # introduced upstream in PR #28289 — otherwise the dominant e2e
+                # config (no guardrails, default include_cost_in_streaming_usage)
+                # skips the per-chunk path entirely and the upstream model id
+                # leaks via the nested `message_start.message.model` field.
+                # Anthropic chunks reach here as raw SSE bytes; the rewriter
+                # parses the SSE frame, mutates `message_start` events only,
+                # and re-encodes. Other event types and the unset-override
+                # case pay near-zero overhead (one dict get + one substring
+                # test). The dict branch is kept for providers that emit
+                # parsed chunks.
+                _returned_override = request_data.get("_litellm_returned_model_name")
+                if isinstance(_returned_override, str) and _returned_override.strip():
+                    _new_model = _returned_override.strip()
+                    if (
+                        isinstance(chunk, dict)
+                        and chunk.get("type") == "message_start"
+                        and isinstance(chunk.get("message"), dict)
+                        and "model" in chunk["message"]
+                    ):
+                        chunk["message"]["model"] = _new_model
+                    elif isinstance(chunk, (bytes, bytearray)):
+                        chunk = ProxyBaseLLMRequestProcessing._rewrite_message_start_model_in_sse_bytes(
+                            bytes(chunk), _new_model
+                        )
+
                 if fast_path:
                     yield serialize_chunk(chunk)
                     continue
@@ -2140,36 +2167,9 @@ class ProxyBaseLLMRequestProcessing:
                         chunk, model_name
                     )
                 )
-                # Per-deployment `returned_model_name` override for Anthropic
-                # /v1/messages SSE: the model name lives nested in
-                # `message_start.message.model` (not at chunk["model"] like
-                # OpenAI), so the chat-completions chunk restamper does not
-                # touch it. Other event types (content_block_*, ping,
-                # message_delta, message_stop) carry no `model` field and pass
-                # through unchanged.
-                #
-                # Anthropic chunks reach here as raw SSE bytes (from
-                # PassThroughStreamingHandler.chunk_processor's
-                # response.aiter_bytes()), so we parse the SSE frame, rewrite
-                # the nested model on `message_start` events, and re-encode.
-                # The dict branch is kept for providers that emit parsed
-                # chunks. On any parse failure the chunk passes through
-                # untouched — the upstream model id may leak in that edge
-                # case, but the stream stays intact.
-                _returned_override = request_data.get("_litellm_returned_model_name")
-                if isinstance(_returned_override, str) and _returned_override.strip():
-                    _new_model = _returned_override.strip()
-                    if (
-                        isinstance(chunk, dict)
-                        and chunk.get("type") == "message_start"
-                        and isinstance(chunk.get("message"), dict)
-                        and "model" in chunk["message"]
-                    ):
-                        chunk["message"]["model"] = _new_model
-                    elif isinstance(chunk, (bytes, bytearray)):
-                        chunk = ProxyBaseLLMRequestProcessing._rewrite_message_start_model_in_sse_bytes(
-                            bytes(chunk), _new_model
-                        )
+                # returned_model_name rewrite now lives above the
+                # fast_path short-circuit (single source of truth — see comment
+                # there for the SSE byte-rewrite contract).
                 yield serialize_chunk(chunk)
         except Exception as e:
             log_proxy_exception(verbose_proxy_logger, "async_data_generator[stream]", e)
