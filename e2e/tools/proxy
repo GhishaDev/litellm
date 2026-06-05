@@ -45,8 +45,8 @@ PROJECT_NAME = "litellm-e2e"
 # Defaults if the corresponding env var is unset/blank in .env.
 # Include the provider prefix so users can route to bedrock / vertex / openrouter
 # by just changing the env var (e.g. MODEL_ANTHROPIC_SONNET=bedrock/anthropic.claude-...).
-DEFAULT_MODEL_ANTHROPIC_SONNET = "anthropic/claude-3-5-sonnet-20241022"
-DEFAULT_MODEL_ANTHROPIC_HAIKU = "anthropic/claude-3-5-haiku-20241022"
+DEFAULT_MODEL_ANTHROPIC_SONNET = "anthropic/claude-sonnet-4-6"
+DEFAULT_MODEL_ANTHROPIC_HAIKU = "anthropic/claude-haiku-4-5"
 DEFAULT_MODEL_OPENAI = "openai/gpt-4o-mini"
 
 
