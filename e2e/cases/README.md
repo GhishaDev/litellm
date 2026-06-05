@@ -38,6 +38,8 @@ verdict. See "Mock-only mode" section below.
 | 21 | `21_anthropic_error_shape.md` | mock | (none — malformed body) | `/v1/messages` 4xx responses use Anthropic envelope (`{type:"error",error:{type,message}}`), no `{"detail":...}` wrapper, no OpenAI-only `param`/`code`; streaming-pre-SSE error path same shape; `/v1/chat/completions` stays OpenAI-shaped (scope guard) | — |
 | 22 | `22_gemini_credential_custom_api_base.md` | mock | Gemini | `gemini/` provider with custom `api_base` (UI PR #24) — exercises `/v1beta/models/<m>:generateContent` against a non-Google host with `x-goog-api-key` | — |
 | 23 | `23_mock_memory_pressure.md` | mock | mock (no real provider) | Memory amplification under streaming + large bodies + retries + slow callbacks. Reproduces the prod 12 GB OOM math (peak Δ +900 MB for 5×40MB concurrent; +1.5 GB with `num_retries:2` + 30% 503). Provider-cost-free | ✓ |
+| 24 | `24_anthropic_beta_overrides_bedrock_gateway.md` | real | Bedrock-Anthropic gateway | `anthropic_beta_overrides` config rewrites `advanced-tool-use-2025-11-20` → `tool-search-tool-2025-10-19` so a Bedrock-backed Anthropic-spec gateway accepts the request. Manual runbook (Tier=real — needs Bedrock); `case_24` in the runner SKIPs to keep `--mock-only` honest | — |
+| 25 | `25_backend_auth_error_type_contract.md` | mock | (none — auth failures) | 401/403 responses carry structured `error.type` (auth_session_expired / auth_invalid_credentials / token_not_found_in_db / auth_permission_denied). Locks the contract that PR #68's UI 401 redirect taxonomy depends on | ✓ |
 
 ## How to invoke
 
