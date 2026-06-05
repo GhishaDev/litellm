@@ -94,6 +94,9 @@ project. The schedule below keeps drift bounded.
   `e2e/cases/` or `docs/`.
 - Re-classify the carried ship-branch delta — any Tier C/D fix that
   has been upstreamed by someone else? Drop it.
+- Review `UPSTREAM_PR_QUEUE.md` (living checklist of Tier C/D items
+  we owe upstream): mark filed/merged, refresh `_Last reviewed_`,
+  and queue the next batch.
 
 **Never**:
 
