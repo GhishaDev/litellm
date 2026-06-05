@@ -478,6 +478,33 @@ case_23() {
     fi
 }
 
+# Case 24 is a manual runbook against a real Bedrock-backed Anthropic-spec
+# gateway. The behaviour it verifies (anthropic_beta_overrides rewrite of
+# the auto-injected advanced-tool-use header to the older
+# tool-search-tool flag Bedrock accepts) cannot be driven by the mock
+# provider — Bedrock's beta-flag validation is the whole point of the
+# test. SKIP unconditionally so the e2e summary records its existence
+# without driving it.
+case_24() {
+    skip "24 anthropic-beta-overrides-bedrock-gateway" \
+        "Tier=real — requires Bedrock; runbook is e2e/cases/24_*.md"
+}
+
+# ------------------------------------------------------------------ 25
+case_25() {
+    echo "[25] backend auth error.type contract..."
+    local out=/tmp/e2e_case25.out
+    bash e2e/cases/data/25_backend_auth_error_type_contract.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "25 auth-error-type-contract: $(grep -m1 '^PASS: all' "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "25 auth-error-type-contract" "$(grep -m1 SKIP "$out")"
+    else
+        fail "25 auth-error-type-contract" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # Pre-flight: proxy must be ready
 if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
         "$PROXY/health/readiness" 2>/dev/null | grep -q '^2'; then
@@ -603,6 +630,15 @@ fi
 # Case 21 triggers only 4xx bodies (malformed request) — no paid upstream
 # call; safe under --skip-paid.
 case_21
+
+# Case 24 always SKIPs (Tier=real, Bedrock-only); recorded so the e2e
+# summary reflects that the runbook exists and hasn't been forgotten.
+case_24
+
+# Case 25 (backend auth error.type contract) is mock-friendly — no
+# provider calls, all curls go to /v1/chat/completions auth-failure
+# paths or /key/generate. Safe outside --mock-only.
+case_25
 
 echo
 echo "============ SUMMARY ============"
