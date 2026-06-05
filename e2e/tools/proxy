@@ -33,6 +33,10 @@ from typing import Any, Dict, Optional
 THIS_DIR = Path(__file__).resolve().parent
 COMPOSE_FILE = (THIS_DIR.parent / "_config" / "docker-compose.yml").resolve()
 ENV_FILE = (THIS_DIR.parent / ".env").resolve()
+# Mock-mode env (no secrets — committed). Loaded in addition to .env
+# when `--with-mock` is set, so users keep a single real-key .env and
+# get mock-friendly api_base / dummy-key overlay via .env.mock.
+ENV_FILE_MOCK = (THIS_DIR.parent / ".env.mock").resolve()
 RENDERED_CONFIG = (THIS_DIR.parent / "_config" / ".litellm.rendered.yaml").resolve()
 DEFAULT_PORT = int(os.environ.get("E2E_PROXY_PORT", "4011"))
 DEFAULT_HOST = os.environ.get("E2E_PROXY_HOST", "localhost")
@@ -46,23 +50,41 @@ DEFAULT_MODEL_ANTHROPIC_HAIKU = "anthropic/claude-3-5-haiku-20241022"
 DEFAULT_MODEL_OPENAI = "openai/gpt-4o-mini"
 
 
-def _load_dotenv() -> None:
-    """Minimal .env parser — avoids the python-dotenv dependency on the host.
+def _read_env_file(path: Path) -> Dict[str, str]:
+    """Parse a single .env file into a {KEY: VALUE} dict.
 
-    Honors `KEY=VALUE` and `KEY="..."` lines, ignores comments and blanks,
-    does NOT override values already in os.environ (shell wins, matching
-    python-dotenv default behavior).
+    Honors `KEY=VALUE` and `KEY="..."` lines, ignores comments and blanks.
+    Returns an empty dict when the file does not exist.
     """
-    if not ENV_FILE.exists():
-        return
-    for raw in ENV_FILE.read_text().splitlines():
+    out: Dict[str, str] = {}
+    if not path.exists():
+        return out
+    for raw in path.read_text().splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, _, v = line.partition("=")
         k = k.strip()
         v = v.strip().strip('"').strip("'")
-        if k and k not in os.environ:
+        if k:
+            out[k] = v
+    return out
+
+
+def _load_dotenv(with_mock: bool = False) -> None:
+    """Minimal .env parser — avoids the python-dotenv dependency on the host.
+
+    Loads `.env` first (real keys, gitignored). When `with_mock=True` and
+    `.env.mock` exists, overlays it on top so mock-only api_base / dummy
+    keys take precedence over any real-mode values. Shell still wins over
+    both (matching python-dotenv default behavior).
+    """
+    values: Dict[str, str] = {}
+    values.update(_read_env_file(ENV_FILE))
+    if with_mock:
+        values.update(_read_env_file(ENV_FILE_MOCK))
+    for k, v in values.items():
+        if k not in os.environ:
             os.environ[k] = v
 
 
@@ -304,8 +326,9 @@ def cmd_start(args: argparse.Namespace) -> int:
         print(f"[proxy] already up at {_proxy_url()}", file=sys.stderr)
         return 0
 
-    _load_dotenv()
-    rendered = render_config(with_mock=getattr(args, "with_mock", False))
+    _with_mock = getattr(args, "with_mock", False)
+    _load_dotenv(with_mock=_with_mock)
+    rendered = render_config(with_mock=_with_mock)
     print(f"[proxy] rendered config -> {rendered}", file=sys.stderr)
     print(f"[proxy] starting (compose project={PROJECT_NAME})...", file=sys.stderr)
     profiles = ["mock"] if getattr(args, "with_mock", False) else []
