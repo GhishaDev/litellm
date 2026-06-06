@@ -119,6 +119,17 @@ def render_config(with_mock: bool = False) -> Path:
         _env_or("MODEL_GEMINI", "gemini/gemini-3.1-pro-preview"),
         implied_provider="gemini",
     )
+    # GLM (Zhipu) via openai-compatible endpoint — repro deployment for
+    # sporadic "Timeout on reading data from socket" investigation on
+    # prod /v1/chat/completions. See /tmp/glm_repro.py for the direct
+    # (non-proxy) timing baseline. Only emitted when GLM_API_KEY is
+    # configured so cases that don't need it stay green.
+    glm_base = os.environ.get("GLM_API_BASE", "").strip()
+    glm_key_set = bool(os.environ.get("GLM_API_KEY", "").strip())
+    glm_model = _ensure_provider_prefix(
+        _env_or("MODEL_GLM", "glm-5.1"),
+        implied_provider="openai",
+    )
 
     def _emit_model(
         model_name: str, model: str, key_env: str, base_env: str, has_base: bool,
@@ -175,6 +186,13 @@ def render_config(with_mock: bool = False) -> Path:
             _emit_model(
                 "gemini-custom-base", gemini_model,
                 "GEMINI_API_KEY", "GEMINI_API_BASE", bool(gemini_base),
+            )
+        )
+    if glm_key_set:
+        blocks.append(
+            _emit_model(
+                "glm-5.1", glm_model,
+                "GLM_API_KEY", "GLM_API_BASE", bool(glm_base),
             )
         )
     if with_mock:
