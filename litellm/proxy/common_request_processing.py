@@ -2171,6 +2171,31 @@ class ProxyBaseLLMRequestProcessing:
                 # fast_path short-circuit (single source of truth — see comment
                 # there for the SSE byte-rewrite contract).
                 yield serialize_chunk(chunk)
+        except asyncio.CancelledError:
+            # Client cancelled this Anthropic /messages or Google
+            # /generateContent stream. asyncio.CancelledError is a
+            # BaseException in Py3.8+ — the `except Exception` below
+            # would let it slip through silently, leaving us with no
+            # SpendLogs row and an orphaned Langfuse trace while the
+            # upstream provider continues billing us for compute.
+            #
+            # Route through cancel_finalize so the partial response gets
+            # billed via the success_partial path. Re-raise to preserve
+            # asyncio's cancellation contract.
+            from litellm.litellm_core_utils.cancel_finalize import (
+                finalize_streaming_cancel,
+            )
+
+            logging_obj = (
+                getattr(response, "logging_obj", None) if response is not None else None
+            )
+            await finalize_streaming_cancel(
+                stream_wrapper=response,
+                logging_obj=logging_obj,
+                user_api_key_dict=user_api_key_dict,
+                request_data=request_data,
+            )
+            raise
         except Exception as e:
             log_proxy_exception(verbose_proxy_logger, "async_data_generator[stream]", e)
             transformed_exception = await proxy_logging_obj.post_call_failure_hook(
