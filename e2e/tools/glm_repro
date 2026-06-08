@@ -1,0 +1,769 @@
+#!/usr/bin/env python3
+"""
+e2e/tools/glm_repro — GLM streaming timeout diagnostic.
+
+Uses the openai SDK on the same code path litellm takes for
+`openai/glm-*` deployments, so timings we measure here are the same
+ones that would surface to clients of /v1/chat/completions through the
+proxy.
+
+Usage
+-----
+    e2e/tools/glm_repro <iters> <workers>
+
+    e2e/tools/glm_repro 20 5      # 20 requests, 5 concurrent
+
+Reads config from `e2e/.env` (shell env wins). See the GLM + REPRO
+blocks in `e2e/.env.example` for available knobs.
+
+What it captures
+----------------
+  Per request:
+    - TTFT (time to first chunk) + the chunk type that arrived first
+    - thinking-done time (first non-thinking chunk seen)
+    - per-chunk inter-arrival deltas, longest gap, count
+    - server-reported usage (prompt + completion + reasoning tokens)
+    - request identifiers (z.ai's chunk-level `id`, plus any
+      `x-request-id` / `x-trace-id` / `cf-ray` headers)
+    - exception type + masked message on failure
+    - exact wall-clock timestamps for cross-referencing with provider
+      logs, nginx access logs, pcaps, etc.
+
+Outputs a structured JSONL timeline (`/tmp/glm-repro-<ts>.jsonl` by
+default) plus a concise stdout summary. The JSONL is the source of
+truth — pipe through jq to slice by iter / failure / completion_id.
+
+The API key is masked in every emitted line (only last 4 chars shown
+for traceback identification).
+
+Background
+----------
+This tool was written during the investigation of sporadic
+"Timeout on reading data from socket" errors on a prod litellm proxy
+calling GLM-5.1. Findings:
+  - GLM-5.1 with thinking has very long tail latency (p50 50s,
+    p90 120s, max 170s+ with up to 11k reasoning tokens)
+  - Same key + same prompt: 0/100 fails from a US source IP,
+    25-35% fails from a SGP source IP — z.ai's Singapore POP
+    occasionally goes silent mid-stream for >300s. Network path
+    (mtr + tcpdump) is clean during the silence; no retransmits,
+    no RST, no keepalive — pure server-side stall.
+  - The bug is on z.ai's SG POP backend, not on the network or
+    litellm. Workaround: route SG-originated traffic through US POP
+    via DNS override / proxy.
+"""
+
+import datetime as dt
+import json
+import os
+import sys
+import threading
+import time
+import traceback
+from pathlib import Path
+
+
+def _load_env(path: Path) -> None:
+    """Minimal .env loader.
+
+    Skips keys with empty values so the script's `os.environ.get(key,
+    default)` fallback kicks in when the .env line is left blank as a
+    placeholder (e.g. `REPRO_TIMELINE=` means "auto-generate path",
+    not "use empty string as path").
+
+    Shell env always wins (we don't overwrite existing keys).
+    """
+    if not path.exists():
+        return
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip()
+        v = v.strip().strip('"').strip("'")
+        if not k or not v:
+            continue
+        if k not in os.environ:
+            os.environ[k] = v
+
+
+def _mask(s: str, key: str) -> str:
+    if not key:
+        return s
+    return s.replace(key, f"<KEY:...{key[-4:]}>")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Structured timeline logger
+# ─────────────────────────────────────────────────────────────────────────
+#
+# Every request emits a sequence of JSONL events to a file. Each event has:
+#   iter        — 1-based test iteration index
+#   wall        — ISO8601 timestamp (UTC, microsecond precision)
+#   t_rel       — seconds since this iteration's request_start (monotonic)
+#   kind        — event type (see below)
+#   ...         — kind-specific fields
+#
+# Event kinds:
+#   request_start    — about to call client.chat.completions.create
+#   headers_received — HTTP response headers arrived (after with_raw_response)
+#   first_chunk      — first SSE chunk parsed (= TTFT mark)
+#   chunk            — a chunk event (only emitted per REPRO_CHUNK_LOG policy)
+#   gap_warn         — inter-chunk gap exceeded threshold (default 3s)
+#   first_answer     — first non-thinking chunk seen (thinking phase done)
+#   usage_chunk      — chunk carrying the final usage object
+#   finish           — stream completed cleanly (finish_reason emitted)
+#   error            — stream raised an exception (timeout, RST, etc.)
+#
+# Chunk logging policy (REPRO_CHUNK_LOG):
+#   "interesting" (default) → only first 3, last 3, gap > threshold,
+#                             special events (first_answer, usage, finish)
+#   "full"                  → every chunk (can be huge: 1k-10k per request)
+#   "none"                  → no per-chunk events at all
+class TimelineLogger:
+    def __init__(self, path: Path, key: str):
+        self.path = path
+        self.key = key
+        self.fh = open(path, "w", buffering=1)  # line-buffered
+        self.lock = threading.Lock()
+        self.gap_warn_threshold_s = float(
+            os.environ.get("REPRO_GAP_WARN_S", "3.0")
+        )
+        self.chunk_log_policy = os.environ.get(
+            "REPRO_CHUNK_LOG", "interesting"
+        ).lower()
+
+    def emit(
+        self,
+        iter_idx: int,
+        t_start_monotonic: float,
+        kind: str,
+        event_epoch: "float | None" = None,
+        event_monotonic: "float | None" = None,
+        **fields,
+    ):
+        """Append a JSONL event.
+
+        event_epoch / event_monotonic let the caller pin the event to an
+        EXACT moment (e.g. the t0 of request_start, or the timestamp at
+        which a specific chunk arrived). When omitted we sample current
+        time — fine for most events but adds microsecond lag.
+        """
+        if event_monotonic is None:
+            event_monotonic = time.monotonic()
+        if event_epoch is None:
+            event_epoch = time.time()
+        wall = dt.datetime.fromtimestamp(
+            event_epoch, dt.timezone.utc
+        ).isoformat()
+        t_rel = event_monotonic - t_start_monotonic
+        # Mask key in any string field that might have leaked it
+        for k, v in fields.items():
+            if isinstance(v, str):
+                fields[k] = _mask(v, self.key)
+        rec = {
+            "iter": iter_idx,
+            "wall": wall,                          # ISO8601 UTC microsecond
+            "epoch": round(event_epoch, 6),        # Unix seconds float
+            "t_rel": round(t_rel, 6),              # seconds since this iter's t0
+            "kind": kind,
+            **fields,
+        }
+        line = json.dumps(rec, default=str, ensure_ascii=False)
+        with self.lock:
+            self.fh.write(line + "\n")
+
+    def should_emit_chunk(self, idx: int, gap_s: float, total_so_far: int) -> bool:
+        if self.chunk_log_policy == "full":
+            return True
+        if self.chunk_log_policy == "none":
+            return False
+        # "interesting" policy: first 3 chunks (warmup) + anything else
+        # interesting (large gap) — gap_warn is already emitted separately,
+        # so this skips emitting a duplicate `chunk` event for those.
+        # We can't detect "last 3" mid-stream because we don't know total
+        # ahead of time. `finish`/`error` events anchor the tail.
+        if idx <= 3:
+            return True
+        return False
+
+    def close(self):
+        with self.lock:
+            self.fh.close()
+
+
+def run_once(
+    client,
+    model: str,
+    prompt: str,
+    timeout_s: float,
+    key: str,
+    iter_idx: int = 0,
+    tl: "TimelineLogger | None" = None,
+) -> dict:
+    """One streaming call. Returns timing stats or {'error': ...}.
+
+    Emits timeline events to `tl` if provided. Each event carries iter_idx
+    and elapsed seconds since this call's request_start so events from
+    concurrent iterations stay disambiguated when interleaved in the JSONL.
+    """
+    out = {
+        "ttft_s": None,
+        "first_answer_t_s": None,  # time until first non-thinking chunk
+        "thinking_done_t_s": None,  # time when thinking stream ends
+        "total_s": None,
+        "chunks": 0,
+        "tokens_answer_est": 0,
+        "tokens_thinking_est": 0,
+        "max_gap_s": 0.0,
+        "usage": None,  # server-reported, if available
+        "finish_reason": None,
+        # Request identifiers — for cross-referencing with provider /
+        # gateway / proxy logs when filing tickets or debugging.
+        "completion_id": None,  # chunk-level `id` field (z.ai's request id)
+        "request_id_hdr": None,  # x-request-id header (openai-style)
+        "trace_id_hdr": None,  # x-trace-id / x-litellm-call-id / cf-ray
+        # Anchors — exact wall + monotonic at the moment of t0
+        "start_epoch": None,    # Unix seconds float
+        "start_wall": None,     # ISO8601 UTC
+    }
+    # Capture t0 atomically — epoch and monotonic must reflect the SAME
+    # instant for downstream correlation to be precise.
+    t0_epoch = time.time()
+    t0 = time.monotonic()
+    last_t = t0
+    saw_thinking = False
+    out["start_epoch"] = round(t0_epoch, 6)
+    out["start_wall"] = dt.datetime.fromtimestamp(
+        t0_epoch, dt.timezone.utc
+    ).isoformat()
+    try:
+        kwargs = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "timeout": timeout_s,
+        }
+        max_tok = int(os.environ.get("REPRO_MAX_TOKENS", "0") or "0")
+        if max_tok > 0:
+            kwargs["max_tokens"] = max_tok
+        if tl:
+            # Use the exact t0 instant so t_rel == 0.0 (not the tiny lag
+            # to emit()). This matters when later events compute their
+            # t_rel relative to this same anchor.
+            tl.emit(
+                iter_idx, t0, "request_start",
+                event_epoch=t0_epoch, event_monotonic=t0,
+                model=model, stream=True,
+                max_tokens=max_tok or None,
+                client_timeout_s=timeout_s,
+                prompt_len_chars=len(prompt),
+                start_wall=out["start_wall"],
+            )
+        # with_raw_response gives us HTTP headers + the raw streaming
+        # response. The openai SDK still parses chunks for us via
+        # .parse() but we keep .headers for cross-referencing.
+        raw = client.chat.completions.with_raw_response.create(**kwargs)
+        headers = raw.headers or {}
+        if tl:
+            tl.emit(
+                iter_idx, t0, "headers_received",
+                http_status=getattr(raw, "http_response", None) and raw.http_response.status_code,
+                headers={k: v for k, v in headers.items()
+                         if k.lower() in (
+                             "x-request-id", "x-trace-id", "x-litellm-call-id",
+                             "cf-ray", "server", "content-type",
+                             "x-ratelimit-remaining", "x-ratelimit-reset",
+                             "x-upstream-status", "x-served-by", "x-cache",
+                             "date", "via",
+                         )},
+            )
+        # Provider request ID via standard openai-style header
+        out["request_id_hdr"] = (
+            headers.get("x-request-id")
+            or headers.get("X-Request-Id")
+            or headers.get("openai-request-id")
+        )
+        # Provider trace ID via a few common variants (z.ai uses x-trace-id,
+        # litellm proxies emit x-litellm-call-id, Cloudflare emits cf-ray)
+        out["trace_id_hdr"] = (
+            headers.get("x-trace-id")
+            or headers.get("X-Trace-Id")
+            or headers.get("x-litellm-call-id")
+            or headers.get("cf-ray")
+        )
+        stream = raw.parse()
+        for chunk in stream:
+            now = time.monotonic()
+            now_epoch = time.time()
+            gap = now - last_t
+            if out["chunks"] == 0:
+                out["ttft_s"] = now - t0
+            elif gap > out["max_gap_s"]:
+                out["max_gap_s"] = gap
+            last_t = now
+            out["chunks"] += 1
+            chunk_idx = out["chunks"]  # 1-based for human-readable logs
+
+            # Capture completion id from the very first chunk (all chunks
+            # in a single completion carry the same id; z.ai uses this as
+            # the request handle in their dashboards).
+            if out["completion_id"] is None:
+                cid = getattr(chunk, "id", None)
+                if cid:
+                    out["completion_id"] = cid
+
+            # Server-reported usage (with include_usage=True it lands in
+            # the final chunk; that chunk has empty choices).
+            if getattr(chunk, "usage", None) is not None:
+                u = chunk.usage
+                out["usage"] = {
+                    "prompt": getattr(u, "prompt_tokens", None),
+                    "completion": getattr(u, "completion_tokens", None),
+                    "total": getattr(u, "total_tokens", None),
+                    "reasoning": (
+                        getattr(
+                            getattr(u, "completion_tokens_details", None),
+                            "reasoning_tokens",
+                            None,
+                        )
+                        if getattr(u, "completion_tokens_details", None)
+                        else None
+                    ),
+                }
+                if tl:
+                    tl.emit(
+                        iter_idx, t0, "usage_chunk",
+                        event_epoch=now_epoch, event_monotonic=now,
+                        chunk_idx=chunk_idx, usage=out["usage"],
+                        completion_id=out["completion_id"],
+                    )
+
+            try:
+                ch = chunk.choices[0]
+                delta = ch.delta
+                if getattr(ch, "finish_reason", None):
+                    out["finish_reason"] = ch.finish_reason
+            except (IndexError, AttributeError):
+                continue
+
+            answer_chunk = getattr(delta, "content", None) or ""
+            thinking_chunk = getattr(delta, "reasoning_content", None) or ""
+            if not thinking_chunk:
+                # Some OpenAI-compatible providers tunnel thinking under
+                # `thinking` instead of `reasoning_content` — accept both.
+                thinking_chunk = getattr(delta, "thinking", None) or ""
+
+            chunk_type = "other"
+            if thinking_chunk:
+                chunk_type = "thinking"
+                saw_thinking = True
+                out["tokens_thinking_est"] += len(thinking_chunk.split())
+            if answer_chunk:
+                chunk_type = "answer"
+                if out["first_answer_t_s"] is None:
+                    out["first_answer_t_s"] = now - t0
+                    if saw_thinking and out["thinking_done_t_s"] is None:
+                        out["thinking_done_t_s"] = now - t0
+                    if tl:
+                        tl.emit(
+                            iter_idx, t0, "first_answer",
+                            event_epoch=now_epoch, event_monotonic=now,
+                            chunk_idx=chunk_idx,
+                            after_reasoning_tokens=out["tokens_thinking_est"],
+                            completion_id=out["completion_id"],
+                        )
+                out["tokens_answer_est"] += len(answer_chunk.split())
+
+            # First-chunk event (separate from "chunk" so it's always emitted)
+            if tl and chunk_idx == 1:
+                tl.emit(
+                    iter_idx, t0, "first_chunk",
+                    event_epoch=now_epoch, event_monotonic=now,
+                    completion_id=out["completion_id"],
+                    chunk_type=chunk_type,
+                    ttft_s=out["ttft_s"],
+                    bytes=(len(thinking_chunk) + len(answer_chunk)),
+                )
+
+            # Per-chunk event (policy-controlled)
+            if tl and chunk_idx > 1:
+                emit_chunk = tl.should_emit_chunk(chunk_idx, gap, out["chunks"])
+                # Always emit a gap_warn event when threshold exceeded
+                if gap >= tl.gap_warn_threshold_s:
+                    tl.emit(
+                        iter_idx, t0, "gap_warn",
+                        event_epoch=now_epoch, event_monotonic=now,
+                        chunk_idx=chunk_idx, gap_s=round(gap, 3),
+                        prev_chunk_idx=chunk_idx - 1,
+                        chunk_type=chunk_type,
+                    )
+                if emit_chunk:
+                    tl.emit(
+                        iter_idx, t0, "chunk",
+                        event_epoch=now_epoch, event_monotonic=now,
+                        chunk_idx=chunk_idx, gap_s=round(gap, 3),
+                        chunk_type=chunk_type,
+                        bytes=(len(thinking_chunk) + len(answer_chunk)),
+                    )
+        out["total_s"] = time.monotonic() - t0
+        if tl:
+            tl.emit(
+                iter_idx, t0, "finish",
+                finish_reason=out["finish_reason"],
+                total_s=round(out["total_s"], 3),
+                chunks=out["chunks"],
+                tokens_answer_est=out["tokens_answer_est"],
+                tokens_thinking_est=out["tokens_thinking_est"],
+                usage=out["usage"],
+                completion_id=out["completion_id"],
+            )
+        return out
+    except Exception as e:  # noqa: BLE001
+        out["total_s"] = time.monotonic() - t0
+        out["error"] = type(e).__name__
+        out["error_msg"] = _mask(str(e), key)
+        out["traceback"] = _mask(traceback.format_exc(), key)
+        # OpenAI SDK exception fields (set by APIStatusError subclasses)
+        out["status_code"] = getattr(e, "status_code", None)
+        out["error_code"] = getattr(e, "code", None)
+        out["error_type"] = getattr(e, "type", None)
+        out["error_param"] = getattr(e, "param", None)
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            out["http_status"] = getattr(resp, "status_code", None)
+            try:
+                hdrs = dict(resp.headers)
+                out["resp_headers"] = hdrs
+                # Surface request ID even on failure — most useful trace
+                # for filing tickets / cross-referencing provider logs.
+                out["request_id_hdr"] = (
+                    hdrs.get("x-request-id")
+                    or hdrs.get("X-Request-Id")
+                    or hdrs.get("openai-request-id")
+                )
+                out["trace_id_hdr"] = (
+                    hdrs.get("x-trace-id")
+                    or hdrs.get("X-Trace-Id")
+                    or hdrs.get("x-litellm-call-id")
+                    or hdrs.get("cf-ray")
+                )
+            except Exception:
+                out["resp_headers"] = None
+            try:
+                out["resp_body"] = _mask(resp.text[:2000], key)
+            except Exception:
+                out["resp_body"] = None
+        out["body_attr"] = _mask(str(getattr(e, "body", "")), key)[:1000]
+        # openai SDK also exposes request_id directly on APIStatusError
+        if not out["request_id_hdr"]:
+            out["request_id_hdr"] = getattr(e, "request_id", None)
+        if tl:
+            # last_t was updated on each chunk; if no chunk arrived,
+            # last_t == t0 so silent_for_s == total_s (= the whole wait)
+            silent_for = time.monotonic() - last_t
+            tl.emit(
+                iter_idx, t0, "error",
+                error_type=out["error"],
+                error_msg=out["error_msg"][:500],
+                status_code=out.get("status_code"),
+                http_status=out.get("http_status"),
+                error_code=out.get("error_code"),
+                completion_id=out["completion_id"],
+                request_id_hdr=out["request_id_hdr"],
+                trace_id_hdr=out["trace_id_hdr"],
+                chunks_before_error=out["chunks"],
+                last_chunk_t_rel=round(last_t - t0, 3) if out["chunks"] else None,
+                silent_for_s=round(silent_for, 3),
+                total_s=round(out["total_s"], 3),
+                # Headers from error response (if any — often empty for
+                # stream-mid timeouts, useful for 4xx/5xx)
+                resp_headers=out.get("resp_headers"),
+                resp_body=out.get("resp_body"),
+            )
+        return out
+
+
+def main():
+    # Layout convention (matches e2e/tools/proxy, call, run-all-cases):
+    # this script lives at e2e/tools/<name> and the env file at
+    # e2e/.env — one level up. Fall back to CWD/e2e/.env so the tool
+    # also works when invoked from the repo root.
+    here = Path(__file__).resolve().parent
+    candidates = [here.parent / ".env", Path.cwd() / "e2e/.env"]
+    for env_path in candidates:
+        if env_path.exists():
+            _load_env(env_path)
+            break
+
+    # Force a specific IP for api.z.ai (equivalent to curl --resolve).
+    # SNI / Host header still use api.z.ai so the TLS cert matches.
+    # Set REPRO_FORCE_IP=<ip> to override the anycast DNS result.
+    _force_ip = os.environ.get("REPRO_FORCE_IP", "").strip()
+    if _force_ip:
+        import socket
+        from urllib.parse import urlparse
+        _force_host = urlparse(
+            os.environ.get("GLM_API_BASE", "https://api.z.ai")
+        ).hostname
+        _orig = socket.getaddrinfo
+
+        def _patched(host, port, *args, **kwargs):
+            if host == _force_host:
+                return [
+                    (
+                        socket.AF_INET,
+                        socket.SOCK_STREAM,
+                        6,
+                        "",
+                        (_force_ip, port),
+                    )
+                ]
+            return _orig(host, port, *args, **kwargs)
+
+        socket.getaddrinfo = _patched
+        print(f"[config] FORCE_IP: {_force_host} → {_force_ip}")
+
+    mode = os.environ.get("REPRO_MODE", "direct").strip()
+    if mode == "proxy":
+        key = "sk-e2e-test"
+        base = "http://localhost:4011/v1"
+        model = "glm-5.1"
+    else:
+        key = os.environ.get("GLM_API_KEY", "").strip()
+        base = os.environ.get("GLM_API_BASE", "").strip().rstrip("/")
+        model = os.environ.get("MODEL_GLM", "glm-4.5").strip() or "glm-4.5"
+
+    if not key:
+        print("FATAL: GLM_API_KEY not set", file=sys.stderr)
+        sys.exit(1)
+    if not base:
+        print("FATAL: GLM_API_BASE not set", file=sys.stderr)
+        sys.exit(1)
+    print(f"[config] mode    : {mode}")
+
+    print(f"[config] base    : {base}")
+    print(f"[config] model   : {model}")
+    print(f"[config] key     : <set, len={len(key)}, ...{key[-4:]}>")
+
+    from openai import OpenAI
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    prompt = (
+        "Write a 200-word introduction to artificial intelligence covering "
+        "its history, current applications, and future potential."
+    )
+    n_iters = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+    n_workers = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    print(f"[config] iters    : {n_iters}")
+    print(f"[config] workers  : {n_workers} (concurrent)")
+    print(f"[config] timeout  : 300s (httpx read+write+connect)")
+    mt = int(os.environ.get("REPRO_MAX_TOKENS", "0") or "0")
+    print(f"[config] max_tok  : {mt if mt > 0 else '<not set>'}")
+    chunk_pol = os.environ.get("REPRO_CHUNK_LOG", "interesting")
+    gap_warn = os.environ.get("REPRO_GAP_WARN_S", "3.0")
+    print(f"[config] chunk_log: {chunk_pol}  (set REPRO_CHUNK_LOG=full|interesting|none)")
+    print(f"[config] gap_warn : {gap_warn}s  (set REPRO_GAP_WARN_S=N)")
+    print(f"[config] prompt   : {prompt[:60]}...")
+
+    # Set up timeline JSONL file
+    timeline_path = Path(
+        os.environ.get(
+            "REPRO_TIMELINE",
+            f"/tmp/glm-repro-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.jsonl",
+        )
+    )
+    tl = TimelineLogger(timeline_path, key)
+    print(f"[config] timeline: {timeline_path}")
+
+    # Suite-level anchor event — every per-iter event can compute its
+    # absolute wall time from suite_start.epoch + (event.t_rel + iter.t0_offset).
+    import socket as _socket
+    suite_start_epoch = time.time()
+    suite_start_mono = time.monotonic()
+    tl.emit(
+        0, suite_start_mono, "suite_start",
+        event_epoch=suite_start_epoch, event_monotonic=suite_start_mono,
+        hostname=_socket.gethostname(),
+        n_iters=n_iters, n_workers=n_workers,
+        client_timeout_s=300.0,
+        mode=mode, model=model,
+        api_base=base,
+        key_fingerprint=f"len={len(key)}/...{key[-4:]}",
+        force_ip=os.environ.get("REPRO_FORCE_IP", "") or None,
+        max_tokens=mt or None,
+        chunk_log_policy=chunk_pol,
+        gap_warn_threshold_s=float(gap_warn),
+        prompt_len_chars=len(prompt),
+    )
+    print()
+
+    # One client per worker thread (OpenAI client is thread-safe but a
+    # per-thread instance avoids any contention on its internal httpx
+    # pool — closer to what litellm router does per deployment).
+    clients = [
+        OpenAI(api_key=key, base_url=base, timeout=300.0) for _ in range(n_workers)
+    ]
+
+    def _one(i):
+        c = clients[i % n_workers]
+        r = run_once(c, model, prompt, timeout_s=300.0, key=key,
+                     iter_idx=i + 1, tl=tl)
+        return i, r
+
+    results = [None] * n_iters
+    completed = 0
+    wall_start = time.monotonic()
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = [pool.submit(_one, i) for i in range(n_iters)]
+        for fut in as_completed(futures):
+            i, r = fut.result()
+            results[i] = r
+            completed += 1
+            if "error" in r:
+                stat = r.get("status_code") or r.get("http_status") or "?"
+                print(
+                    f"[{completed:3d}/{n_iters}] i={i+1:3d}  ERR  {r['error']:>22s}"
+                    f"  status={stat}  after {r['total_s']:6.1f}s  ({r['chunks']} chunks)"
+                )
+                print(f"           msg : {r['error_msg'][:200]}")
+                err_ids = []
+                if r.get("completion_id"):
+                    err_ids.append(f"id={r['completion_id']}")
+                if r.get("request_id_hdr"):
+                    err_ids.append(f"req={r['request_id_hdr']}")
+                if r.get("trace_id_hdr"):
+                    err_ids.append(f"trace={r['trace_id_hdr']}")
+                if err_ids:
+                    print(f"           {'  '.join(err_ids)}")
+                if r.get("resp_headers"):
+                    interesting = {
+                        k: v
+                        for k, v in r["resp_headers"].items()
+                        if k.lower() in (
+                            "x-request-id",
+                            "x-trace-id",
+                            "x-litellm-call-id",
+                            "x-litellm-model-id",
+                            "x-litellm-model-group",
+                            "server",
+                            "content-type",
+                            "x-ratelimit-remaining",
+                            "x-upstream-status",
+                        )
+                    }
+                    if interesting:
+                        print(f"           hdrs: {interesting}")
+                if r.get("resp_body"):
+                    print(f"           body: {r['resp_body'][:300]}")
+                if r.get("body_attr") and r["body_attr"] != "None":
+                    print(f"           attr: {r['body_attr'][:300]}")
+            else:
+                u = r["usage"] or {}
+                fr = r.get("finish_reason") or "?"
+                print(
+                    f"[{completed:3d}/{n_iters}] i={i+1:3d}  OK   "
+                    f"ttft={r['ttft_s']:5.2f}s  think_done={r['thinking_done_t_s'] or 0:6.1f}s  "
+                    f"total={r['total_s']:6.1f}s  "
+                    f"r_tok={u.get('reasoning') or 0:5d}  "
+                    f"a_tok={r['tokens_answer_est']:3d}w  "
+                    f"finish={fr:6s}  max_gap={r['max_gap_s']:4.2f}s"
+                )
+                ids = []
+                if r.get("completion_id"):
+                    ids.append(f"id={r['completion_id']}")
+                if r.get("request_id_hdr"):
+                    ids.append(f"req={r['request_id_hdr']}")
+                if r.get("trace_id_hdr"):
+                    ids.append(f"trace={r['trace_id_hdr']}")
+                if ids:
+                    print(f"           {'  '.join(ids)}")
+
+    wall_total = time.monotonic() - wall_start
+    suite_end_epoch = time.time()
+    tl.emit(
+        0, suite_start_mono, "suite_end",
+        event_epoch=suite_end_epoch,
+        wall_total_s=round(wall_total, 3),
+        ok=sum(1 for r in results if r and "error" not in r),
+        err=sum(1 for r in results if r and "error" in r),
+    )
+    print()
+    print("=== SUMMARY ===")
+    n_err = sum(1 for r in results if "error" in r)
+    n_ok = len(results) - n_err
+    print(f"wall (suite)  : {wall_total:.1f}s")
+    print(f"requests      : {n_ok}/{len(results)} OK, {n_err}/{len(results)} ERR")
+    if n_err:
+        print("ERROR breakdown:")
+        from collections import Counter
+
+        err_counter = Counter(r["error"] for r in results if "error" in r)
+        for err, n in err_counter.most_common():
+            print(f"  {n:3d}x  {err}")
+            for r in results:
+                if r.get("error") == err:
+                    print(f"        e.g. msg={r['error_msg'][:200]}")
+                    break
+
+    def _pcts(vals):
+        if not vals:
+            return None
+        s = sorted(vals)
+        n = len(s)
+        return {
+            "min": s[0],
+            "p50": s[n // 2],
+            "p90": s[int(n * 0.9) - 1] if n >= 10 else s[-1],
+            "p99": s[int(n * 0.99) - 1] if n >= 100 else s[-1],
+            "max": s[-1],
+        }
+
+    if n_ok:
+        ttfts = [r["ttft_s"] for r in results if r and "error" not in r]
+        totals = [r["total_s"] for r in results if r and "error" not in r]
+        thinks = [
+            r["thinking_done_t_s"] or 0
+            for r in results
+            if r and "error" not in r and r.get("thinking_done_t_s")
+        ]
+        rtoks = [
+            (r["usage"] or {}).get("reasoning") or 0
+            for r in results
+            if r and "error" not in r and r.get("usage")
+        ]
+        max_gaps = [r["max_gap_s"] for r in results if r and "error" not in r]
+
+        def _show(name, vals):
+            p = _pcts(vals)
+            if p:
+                print(
+                    f"{name:14s}: min={p['min']:.2f}  p50={p['p50']:.2f}  "
+                    f"p90={p['p90']:.2f}  max={p['max']:.2f}"
+                )
+
+        _show("TTFT (s)", ttfts)
+        _show("thinking (s)", thinks)
+        _show("total (s)", totals)
+        _show("max_gap (s)", max_gaps)
+        if rtoks:
+            _show("r_tokens", rtoks)
+
+    tl.close()
+    print()
+    print(f"Timeline events written to: {timeline_path}")
+    print("Quick inspection commands:")
+    print(f"  # Count events per kind")
+    print(f"  jq -r .kind {timeline_path} | sort | uniq -c | sort -rn")
+    print(f"  # Show all events for a specific iter (e.g. iter=5)")
+    print(f"  jq -c 'select(.iter==5)' {timeline_path}")
+    print(f"  # Show all errors + their preceding gap_warn events")
+    print(f"  jq -c 'select(.kind==\"error\" or .kind==\"gap_warn\")' {timeline_path}")
+    print(f"  # Errors with completion_id (file ticket with z.ai)")
+    print(f"  jq -c 'select(.kind==\"error\") | {{iter, completion_id, silent_for_s, last_chunk_t_rel, error_type}}' {timeline_path}")
+
+
+if __name__ == "__main__":
+    main()
