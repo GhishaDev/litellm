@@ -308,8 +308,14 @@ class TestFinalizeStreamingCancel:
         assert is_logging_obj_cancelled(logging_obj)
         # And the failure hook fired (zero chunks → no success path)
         assert len(captured_failure_calls) == 1
-        # request_data threaded through unchanged
-        assert captured_failure_calls[0]["request_data"] == {"req": "data"}
+        # request_data was enriched with cancel markers (PR #3 bridges
+        # them in so SpendLogs picks them up). Original keys preserved.
+        forwarded = captured_failure_calls[0]["request_data"]
+        assert forwarded["req"] == "data"
+        meta = forwarded["litellm_params"]["metadata"]
+        assert meta["cancellation_indicator"] == "client_disconnect"
+        assert meta["cancel_phase"] == "streaming_partial"
+        assert meta["status"] == "success_partial"
         # original_exception is a CancelledError (well-typed)
         assert isinstance(
             captured_failure_calls[0]["original_exception"],

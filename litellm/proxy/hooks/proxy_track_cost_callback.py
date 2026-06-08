@@ -162,9 +162,38 @@ class _ProxyDBLogger(CustomLogger):
             if obj_start is not None:
                 actual_start_time = obj_start
 
+        # Bridge cancel markers from logging_obj.model_call_details into
+        # request_data.litellm_params.metadata so the SpendLogs payload
+        # carries them. cancel_finalize.mark_logging_obj_cancelled writes
+        # to model_call_details (logging-side), but _get_spend_logs_metadata
+        # pulls from litellm_params.metadata (spend-side) — without this
+        # bridge the markers never reach the LiteLLM_SpendLogs row.
+        from litellm.litellm_core_utils.cancel_billing import (
+            compute_prompt_only_cost,
+            enrich_request_metadata_with_cancel_markers,
+        )
+
+        enrich_request_metadata_with_cancel_markers(
+            request_data=request_data,
+            logging_obj=_litellm_logging_obj,
+        )
+
+        # For cancellations that landed in the failure-hook (i.e. zero
+        # chunks were received before client disconnected), bill the
+        # prompt-only baseline instead of the hardcoded 0.0. Upstream
+        # still received the prompt and started processing — see
+        # cancel_billing.py docstring for the full rationale.
+        billed_cost = 0.0
+        if isinstance(original_exception, asyncio.CancelledError):
+            billed_cost = compute_prompt_only_cost(
+                messages=request_data.get("messages"),
+                model=request_data.get("model"),
+                custom_llm_provider=request_data.get("custom_llm_provider"),
+            )
+
         await proxy_logging_obj.db_spend_update_writer.update_database(
             token=user_api_key_dict.api_key,
-            response_cost=0.0,
+            response_cost=billed_cost,
             user_id=user_api_key_dict.user_id,
             end_user_id=user_api_key_dict.end_user_id,
             team_id=user_api_key_dict.team_id,

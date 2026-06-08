@@ -196,6 +196,20 @@ async def finalize_streaming_cancel(
                 bytes_delivered=bytes_delivered,
             )
 
+            # Bridge the cancel markers we just set on the Logging
+            # object into request_data.litellm_params.metadata so the
+            # SpendLogs row reflects the cancellation. The standard
+            # spend pipeline reads metadata from litellm_params, not
+            # from model_call_details.
+            from litellm.litellm_core_utils.cancel_billing import (
+                enrich_request_metadata_with_cancel_markers,
+            )
+
+            enrich_request_metadata_with_cancel_markers(
+                request_data=request_data,
+                logging_obj=logging_obj,
+            )
+
             chunks = _get_accumulated_chunks(stream_wrapper)
             if not chunks:
                 # Nothing to bill — no chunks made it before cancel.
@@ -336,6 +350,18 @@ async def finalize_non_stream_cancel(
                 bytes_delivered=0,  # non-stream → nothing flushed yet
             )
 
+            # Bridge cancel markers into request_data so SpendLogs row
+            # picks them up. See finalize_streaming_cancel for the
+            # equivalent call + rationale.
+            from litellm.litellm_core_utils.cancel_billing import (
+                enrich_request_metadata_with_cancel_markers,
+            )
+
+            enrich_request_metadata_with_cancel_markers(
+                request_data=request_data,
+                logging_obj=logging_obj,
+            )
+
             if upstream_task is None:
                 # Cancel fired before we even kicked off the upstream
                 # call — phase should really be before_upstream. Caller
@@ -353,6 +379,12 @@ async def finalize_non_stream_cancel(
                 )
                 details["upstream_completed"] = True
                 details["usage_source"] = "upstream_completed_after_cancel"
+                # Re-bridge so the freshly-set upstream_completed /
+                # usage_source markers land in request_data too.
+                enrich_request_metadata_with_cancel_markers(
+                    request_data=request_data,
+                    logging_obj=logging_obj,
+                )
                 if logging_obj is not None:
                     try:
                         await logging_obj.async_success_handler(
