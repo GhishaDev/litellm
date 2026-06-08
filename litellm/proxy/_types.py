@@ -3534,6 +3534,16 @@ class SpendLogsMetadata(TypedDict):
     cost_breakdown: Optional[
         CostBreakdown
     ]  # Detailed cost breakdown (input_cost, output_cost, margin, discount, etc.)
+    # === Client cancellation tracking (status="success_partial") ===
+    # All Optional; populated only on requests where the client disconnected
+    # before the response completed. See litellm/types/utils.py CancelPhase
+    # / CancelUsageSource for value semantics. DB column `metadata` is JSON
+    # so no schema migration is needed to add these fields.
+    cancellation_indicator: Optional[str]
+    cancel_phase: Optional[str]
+    bytes_delivered_to_client: Optional[int]
+    upstream_completed: Optional[bool]
+    usage_source: Optional[str]
 
 
 class SpendLogsPayload(TypedDict):

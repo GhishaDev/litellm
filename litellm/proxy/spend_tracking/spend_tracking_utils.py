@@ -109,6 +109,13 @@ def _get_spend_logs_metadata(
             attempted_retries=None,
             max_retries=None,
             cost_breakdown=None,
+            # Cancellation fields default to None; populated only by the
+            # cancel-billing path when status="success_partial".
+            cancellation_indicator=None,
+            cancel_phase=None,
+            bytes_delivered_to_client=None,
+            upstream_completed=None,
+            usage_source=None,
         )
     verbose_proxy_logger.debug(
         "getting payload for SpendLogs, available keys in metadata: "
