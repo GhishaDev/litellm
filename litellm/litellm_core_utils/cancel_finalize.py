@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime
 from typing import Any, List, Optional
 
 import anyio
@@ -260,7 +261,7 @@ async def finalize_streaming_cancel(
                     await logging_obj.async_success_handler(
                         result=partial_response,
                         start_time=getattr(logging_obj, "start_time", None),
-                        end_time=time.time(),
+                        end_time=datetime.now(),
                         cache_hit=False,
                     )
                 except Exception as success_exc:
@@ -390,7 +391,7 @@ async def finalize_non_stream_cancel(
                         await logging_obj.async_success_handler(
                             result=response,
                             start_time=getattr(logging_obj, "start_time", None),
-                            end_time=time.time(),
+                            end_time=datetime.now(),
                             cache_hit=False,
                         )
                     except Exception as success_exc:

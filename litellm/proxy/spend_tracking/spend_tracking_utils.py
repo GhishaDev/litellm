@@ -1099,13 +1099,28 @@ def _should_store_prompts_and_responses_in_spend_logs() -> bool:
 
 def _get_status_for_spend_log(
     metadata: dict,
-) -> Literal["success", "failure"]:
+) -> Literal["success", "success_partial", "failure"]:
     """
-    Get the status for the spend log.
+    Get the status for the spend log row's top-level ``status`` column.
 
-    It's only a failure if metadata.get("status") is "failure"
+    - "failure":         metadata.status == "failure" (real provider/auth error)
+    - "success_partial": metadata.status == "success_partial" (client cancel
+                         path billed by cancel_finalize / cancel_billing —
+                         upstream consumed compute we must bill, but the
+                         response never reached the client)
+    - "success":         everything else (the default happy path)
+
+    Note: the third literal arm is intentional. Earlier this function
+    was bi-valued; widening to tri-valued so the cancellation taxonomy
+    set by cancel_billing.enrich_request_metadata_with_cancel_markers
+    survives all the way to the LiteLLM_SpendLogs.status column —
+    otherwise dashboards filtering by `WHERE status='success_partial'`
+    silently match zero rows and the whole cancel-billing pipeline
+    looks broken from the UI.
     """
     _status: Optional[str] = metadata.get("status", None)
     if _status == "failure":
         return "failure"
+    if _status == "success_partial":
+        return "success_partial"
     return "success"

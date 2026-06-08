@@ -505,6 +505,21 @@ case_25() {
     fi
 }
 
+# ------------------------------------------------------------------ 26
+case_26() {
+    echo "[26] cancel billing → success_partial SpendLogs..."
+    local out=/tmp/e2e_case26.out
+    bash e2e/cases/data/26_cancel_billing_success_partial.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "26 cancel-billing: $(grep -m1 '^PASS: all' "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "26 cancel-billing" "$(grep -m1 SKIP "$out")"
+    else
+        fail "26 cancel-billing" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # Pre-flight: proxy must be ready
 if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
         "$PROXY/health/readiness" 2>/dev/null | grep -q '^2'; then
@@ -639,6 +654,12 @@ case_24
 # provider calls, all curls go to /v1/chat/completions auth-failure
 # paths or /key/generate. Safe outside --mock-only.
 case_25
+
+# Case 26 (cancel billing → success_partial SpendLogs). Requires the
+# mock provider so we can deterministically pace streams and cancel
+# them mid-flight without burning real provider $. Skipped outside
+# --with-mock (mock container won't be reachable).
+case_26
 
 echo
 echo "============ SUMMARY ============"

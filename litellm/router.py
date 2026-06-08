@@ -2142,7 +2142,22 @@ class Router:
                 return self
 
             async def __anext__(self):
-                return await self._async_generator.__anext__()
+                # Delegate to the underlying generator (the
+                # stream_with_fallbacks coroutine that may swap to a
+                # fallback mid-stream). The parent CustomStreamWrapper's
+                # __anext__ would do chunk accumulation on self.chunks,
+                # but we override here because the underlying generator
+                # has its own custom retry/fallback semantics.
+                #
+                # Append each yielded chunk to self.chunks so downstream
+                # code (cancel_finalize, post-stream reassembly) can find
+                # them on the wrapper without having to walk through to
+                # the inner model_response. Mirrors CustomStreamWrapper's
+                # behavior for the non-error path.
+                chunk = await self._async_generator.__anext__()
+                if chunk is not None:
+                    self.chunks.append(chunk)
+                return chunk
 
         async def stream_with_fallbacks():
             fallback_response = None  # Track for cleanup in finally

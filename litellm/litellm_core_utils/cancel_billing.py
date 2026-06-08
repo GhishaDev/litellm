@@ -116,6 +116,22 @@ def enrich_request_metadata_with_cancel_markers(
     if not details or details.get("cancellation_indicator") is None:
         return
 
+    # Build the list of target metadata dicts to mutate. We have to
+    # touch both:
+    #
+    #   1. request_data["litellm_params"]["metadata"] — the dict used
+    #      by the proxy failure-hook path to build SpendLogs.
+    #   2. logging_obj.litellm_params["metadata"] — the dict used by
+    #      the litellm Logging.async_success_handler / cost callback
+    #      to build SpendLogs.
+    #
+    # They are usually the SAME dict object (proxy normally sets
+    # logging_obj.litellm_params = request_data["litellm_params"]), but
+    # not always — some code paths copy litellm_params at construction
+    # time and the two dicts diverge. Updating both is cheap and
+    # idempotent.
+    targets: list = []
+
     # Make sure the litellm_params.metadata dict exists for us to mutate.
     if "litellm_params" not in request_data:
         request_data["litellm_params"] = {}
@@ -124,21 +140,27 @@ def enrich_request_metadata_with_cancel_markers(
         or request_data["litellm_params"]["metadata"] is None
     ):
         request_data["litellm_params"]["metadata"] = {}
-    target_metadata = request_data["litellm_params"]["metadata"]
+    targets.append(request_data["litellm_params"]["metadata"])
 
-    # Copy the five cancellation fields. We use direct assignment
-    # (not setdefault) because the Logging object is the source of
-    # truth — if it was set there, it should win over any earlier
-    # value in metadata.
-    for field in (
-        "cancellation_indicator",
-        "cancel_phase",
-        "bytes_delivered_to_client",
-        "upstream_completed",
-        "usage_source",
-    ):
-        if field in details:
-            target_metadata[field] = details[field]
+    # Also touch logging_obj.litellm_params.metadata if available.
+    lp = getattr(logging_obj, "litellm_params", None)
+    if isinstance(lp, dict):
+        if "metadata" not in lp or lp["metadata"] is None:
+            lp["metadata"] = {}
+        if lp["metadata"] is not targets[0]:
+            targets.append(lp["metadata"])
 
-    # Also override status so the SpendLogs row gets success_partial.
-    target_metadata["status"] = "success_partial"
+    # Copy the five cancellation fields into every target.
+    for target_metadata in targets:
+        for field in (
+            "cancellation_indicator",
+            "cancel_phase",
+            "bytes_delivered_to_client",
+            "upstream_completed",
+            "usage_source",
+        ):
+            if field in details:
+                target_metadata[field] = details[field]
+
+        # Also override status so the SpendLogs row gets success_partial.
+        target_metadata["status"] = "success_partial"

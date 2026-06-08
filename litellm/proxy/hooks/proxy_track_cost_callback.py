@@ -77,13 +77,22 @@ class _ProxyDBLogger(CustomLogger):
 
         from litellm.proxy.proxy_server import proxy_logging_obj
 
+        # Detect whether this failure path is actually serving a client
+        # cancellation (CancelledError propagated through
+        # cancel_finalize._fallback_to_failure_hook). When it is, the
+        # SpendLogs row should be classified as success_partial — the
+        # upstream consumed billable compute even though no chunks
+        # reached the client — and any cancel markers already set on
+        # request_data.litellm_params.metadata must NOT be clobbered.
+        _is_cancel = isinstance(original_exception, asyncio.CancelledError)
+
         _metadata = dict(
             LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(
                 user_api_key_dict=user_api_key_dict
             )
         )
         _metadata["user_api_key"] = user_api_key_dict.api_key
-        _metadata["status"] = "failure"
+        _metadata["status"] = "success_partial" if _is_cancel else "failure"
         _error_information = StandardLoggingPayloadSetup.get_error_information(
             original_exception=original_exception,
             traceback_str=traceback_str,
@@ -120,6 +129,22 @@ class _ProxyDBLogger(CustomLogger):
         # Preserve tags from existing metadata
         if existing_litellm_metadata.get("tags"):
             existing_metadata["tags"] = existing_litellm_metadata.get("tags")
+
+        # Preserve cancellation markers written by cancel_finalize before
+        # the failure hook ran. Without this, the success_partial taxonomy
+        # gets stripped on every cancelled request that took the
+        # fallback-to-failure-hook path (zero-chunk cancels in particular).
+        for _cancel_field in (
+            "cancellation_indicator",
+            "cancel_phase",
+            "bytes_delivered_to_client",
+            "upstream_completed",
+            "usage_source",
+        ):
+            if _cancel_field in existing_litellm_metadata:
+                existing_metadata[_cancel_field] = existing_litellm_metadata[
+                    _cancel_field
+                ]
 
         request_data["litellm_params"]["proxy_server_request"] = (
             request_data.get("proxy_server_request")
@@ -162,12 +187,10 @@ class _ProxyDBLogger(CustomLogger):
             if obj_start is not None:
                 actual_start_time = obj_start
 
-        # Bridge cancel markers from logging_obj.model_call_details into
-        # request_data.litellm_params.metadata so the SpendLogs payload
-        # carries them. cancel_finalize.mark_logging_obj_cancelled writes
-        # to model_call_details (logging-side), but _get_spend_logs_metadata
-        # pulls from litellm_params.metadata (spend-side) — without this
-        # bridge the markers never reach the LiteLLM_SpendLogs row.
+        # Bridge cancel markers — runs late as a safety net in case some
+        # code path didn't pre-bridge (we already preserve markers from
+        # litellm_params.metadata above; this catches the case where the
+        # markers are on logging_obj but never landed in litellm_params).
         from litellm.litellm_core_utils.cancel_billing import (
             compute_prompt_only_cost,
             enrich_request_metadata_with_cancel_markers,
