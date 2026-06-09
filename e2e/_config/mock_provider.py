@@ -944,6 +944,13 @@ class Handler(BaseHTTPRequestHandler):
                 STATS.request("anthropic", "stream", 499)
             return
 
+        # TTFT delay BEFORE returning non-stream response. Needed by
+        # e2e/cases/27 (non-stream cancel + shield-and-wait) — without
+        # this, the mock answers in ~10ms and a client `--max-time 1`
+        # never has a chance to fire the cancel signal. Mirrors the
+        # stream path's TTFT semantics above.
+        if p["ttft_ms"]:
+            time.sleep(p["ttft_ms"] / 1000.0)
         out_t = max(1, p["full_chars"] // 4)
         resp = {
             "id": msg_id,

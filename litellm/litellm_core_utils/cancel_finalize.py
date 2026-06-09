@@ -60,8 +60,14 @@ from litellm.types.utils import CancelPhase
 # Default timeout for the non-stream shield wait. 60 s is long enough to
 # cover Anthropic thinking-model long-tails (p99 ~120 s on observed
 # traffic — see e2e/tools/glm_repro findings) without holding the worker
-# indefinitely. Tunable via env if a deployment finds it too generous.
-DEFAULT_CANCEL_SHIELD_TIMEOUT_S: float = 60.0
+# indefinitely. Tunable via LITELLM_CANCEL_SHIELD_TIMEOUT_S env var when
+# a deployment finds it too generous, or for e2e cases that need to
+# deterministically trigger shield_timeout in < 60s.
+import os as _os
+
+DEFAULT_CANCEL_SHIELD_TIMEOUT_S: float = float(
+    _os.environ.get("LITELLM_CANCEL_SHIELD_TIMEOUT_S", "60.0")
+)
 
 
 def mark_logging_obj_cancelled(
