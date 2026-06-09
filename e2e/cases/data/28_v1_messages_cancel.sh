@@ -1,38 +1,24 @@
 #!/usr/bin/env bash
 # Case 28 — /v1/messages (Anthropic native) streaming cancel.
 #
-# Status: deferred (skipped 77). The CancelledError catch in
-# common_request_processing.py:async_streaming_data_generator IS in
-# place and DOES detect the cancel (verified: SpendLogs row gets the
-# correct partial completion_tokens reflecting bytes received before
-# cancel). The remaining gap is metadata-marker propagation:
+# Verifies that the cancellation catch in
+# litellm/proxy/common_request_processing.py:async_streaming_data_generator
+# fires for the Anthropic-native /v1/messages endpoint and propagates
+# the success_partial markers into the SpendLogs row.
 #
-# Observed behavior (mock-anthropic + curl --max-time 2 against /v1/messages):
-#   - curl rc=124, ~5948 bytes streamed
-#   - SpendLogs row written with completion_tokens=494 (correct partial)
-#   - status="success" (NOT success_partial — markers missing)
-#   - cancellation_indicator=null
+# The two endpoints (/v1/chat/completions and /v1/messages) share the
+# cost-tracking pipeline downstream but enter through different
+# generator functions. Earlier in Phase 1 the catch was in place but
+# the logging_obj lookup
+#   `getattr(response, "logging_obj", None)`
+# returned None on the Anthropic path (the response object is a bare
+# async iterator without that attribute), so mark_logging_obj_cancelled
+# became a no-op and markers never reached the row.
 #
-# Root cause: in the /v1/messages code path the `response` object
-# passed to async_streaming_data_generator is NOT a CustomStreamWrapper
-# — it's an async iterator from litellm.anthropic_messages without a
-# `.logging_obj` attribute. So
-# `getattr(response, "logging_obj", None)` returns None,
-# `mark_logging_obj_cancelled(None, ...)` is a no-op, and the markers
-# never reach SpendLogs.
-#
-# Fix scope (Phase 2): plumb logging_obj through anthropic_messages
-# return path, or have async_streaming_data_generator pull it from
-# request_data["litellm_logging_obj"] instead of from response. Both
-# touch more code than fits the Phase 1 ship.
-#
-# Until then the /v1/messages cancellation IS partially billed
-# correctly (completion_tokens reflects what streamed before cancel),
-# just not flagged with success_partial. The billing-correctness goal
-# of Phase 1 is met; the dashboard-classification goal is deferred.
-
-echo "SKIP: /v1/messages cancel detection works but markers don't propagate (see header comment)."
-exit 77
+# Phase 2 fix (this case re-enables): logging_obj falls back to
+# `request_data["litellm_logging_obj"]` when not present on the
+# response object. See the catch block in
+# common_request_processing.py:async_streaming_data_generator.
 
 set -eu
 

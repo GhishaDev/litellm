@@ -1,22 +1,6 @@
 #!/usr/bin/env bash
 # Case 30 — Non-stream cancel + shield_timeout path.
 #
-# Status: deferred (skipped 77). Same root cause as case 27: the
-# finalize_non_stream_cancel helper (including its shield-timeout
-# branch) is implemented and unit-tested, but no proxy code path
-# triggers it because non-stream cancel detection isn't wired up.
-# Until check_request_disconnection polling is revived (see case 27
-# header for the full explanation), the shield_timeout branch is
-# unreachable from a real HTTP request and this case cannot pass
-# deterministically.
-
-echo "SKIP: shield_timeout path not reachable until non-stream cancel polling is wired (see case 27)."
-exit 77
-
-# --- Original case 30 implementation below (kept for reference, runs
-# --- after the early exit above is removed once Phase 2 lands the
-# --- polling task in proxy_server.py).
-#
 # Verifies the LITELLM_CANCEL_SHIELD_TIMEOUT_S env var and the
 # fallback branch in finalize_non_stream_cancel:
 #

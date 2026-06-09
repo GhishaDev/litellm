@@ -7048,9 +7048,15 @@ async def async_data_generator(  # noqa: PLR0915
             finalize_streaming_cancel,
         )
 
+        # Prefer response.logging_obj; fall back to the proxy's
+        # request-scoped Logging instance. See the equivalent block in
+        # common_request_processing.async_streaming_data_generator for
+        # the full rationale.
         logging_obj = (
             getattr(response, "logging_obj", None) if response is not None else None
         )
+        if logging_obj is None:
+            logging_obj = request_data.get("litellm_logging_obj")
         await finalize_streaming_cancel(
             stream_wrapper=response,
             logging_obj=logging_obj,

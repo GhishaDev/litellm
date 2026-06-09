@@ -117,41 +117,57 @@ def enrich_request_metadata_with_cancel_markers(
         return
 
     # Build the list of target metadata dicts to mutate. We have to
-    # touch both:
+    # touch ALL of:
     #
-    #   1. request_data["litellm_params"]["metadata"] — the dict used
-    #      by the proxy failure-hook path to build SpendLogs.
-    #   2. logging_obj.litellm_params["metadata"] — the dict used by
-    #      the litellm Logging.async_success_handler / cost callback
-    #      to build SpendLogs.
+    #   1. request_data["litellm_params"]["metadata"] — used by the
+    #      proxy failure-hook path to build SpendLogs.
+    #   2. request_data["litellm_params"]["litellm_metadata"] — used
+    #      by newer endpoints (e.g. /v1/messages, anthropic_messages,
+    #      generate_content). get_litellm_metadata_from_kwargs prefers
+    #      litellm_metadata when both are present, so writing only to
+    #      metadata leaves the newer endpoints' markers invisible.
+    #   3. logging_obj.litellm_params["metadata"] — used by the litellm
+    #      Logging.async_success_handler / cost callback when the
+    #      Logging object's litellm_params dict has diverged from
+    #      request_data's (some code paths copy at construction time).
+    #   4. logging_obj.litellm_params["litellm_metadata"] — same as
+    #      above but for the newer-endpoint variant.
     #
-    # They are usually the SAME dict object (proxy normally sets
-    # logging_obj.litellm_params = request_data["litellm_params"]), but
-    # not always — some code paths copy litellm_params at construction
-    # time and the two dicts diverge. Updating both is cheap and
-    # idempotent.
-    targets: list = []
+    # We write the cancel markers to whichever variants already exist,
+    # plus always to "metadata" (which the old endpoints + the failure
+    # hook read). Idempotent; safe to call multiple times.
+    target_dicts: list = []
 
-    # Make sure the litellm_params.metadata dict exists for us to mutate.
+    def _ensure_metadata_dicts(parent: dict) -> None:
+        if "metadata" not in parent or parent["metadata"] is None:
+            parent["metadata"] = {}
+        target_dicts.append(parent["metadata"])
+        # litellm_metadata is only present on newer endpoints; if it's
+        # already there with content, we must also write to it (the
+        # extractor prefers it over metadata).
+        existing_litellm_metadata = parent.get("litellm_metadata")
+        if isinstance(existing_litellm_metadata, dict):
+            target_dicts.append(existing_litellm_metadata)
+
+    # 1+2: request_data side.
     if "litellm_params" not in request_data:
         request_data["litellm_params"] = {}
-    if (
-        "metadata" not in request_data["litellm_params"]
-        or request_data["litellm_params"]["metadata"] is None
-    ):
-        request_data["litellm_params"]["metadata"] = {}
-    targets.append(request_data["litellm_params"]["metadata"])
+    _ensure_metadata_dicts(request_data["litellm_params"])
 
-    # Also touch logging_obj.litellm_params.metadata if available.
+    # 3+4: logging_obj side, if it has its own litellm_params dict.
     lp = getattr(logging_obj, "litellm_params", None)
     if isinstance(lp, dict):
-        if "metadata" not in lp or lp["metadata"] is None:
-            lp["metadata"] = {}
-        if lp["metadata"] is not targets[0]:
-            targets.append(lp["metadata"])
+        prior_targets = list(target_dicts)
+        _ensure_metadata_dicts(lp)
+        # De-dup: skip any dict already in our list (when proxy did the
+        # usual `logging_obj.litellm_params = request_data["litellm_params"]`
+        # assignment, the same dict gets enumerated twice).
+        target_dicts = prior_targets + [
+            d for d in target_dicts[len(prior_targets) :] if d not in prior_targets
+        ]
 
     # Copy the five cancellation fields into every target.
-    for target_metadata in targets:
+    for target_metadata in target_dicts:
         for field in (
             "cancellation_indicator",
             "cancel_phase",
