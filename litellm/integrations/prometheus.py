@@ -1875,6 +1875,23 @@ class PrometheusLogger(CustomLogger):
             "user_api_key_org_id"
         )
 
+        # Cancel-vs-failure split: rows that come through this hook
+        # because of asyncio.CancelledError are NOT system failures —
+        # the proxy did its job, the client gave up — and they DID
+        # consume billable upstream compute (prompt-only). Without this
+        # branch we'd (a) inflate the failure-rate counter with what
+        # are really cancellations and (b) lose the litellm_spend_metric
+        # increment for the prompt-only cost (failure_handler now
+        # populates SLP.response_cost for CancelledError — see
+        # litellm_logging.py _failure_handler_helper_fn). Detect via
+        # the SLP metadata marker the cancel-finalize path puts there.
+        _slm_metadata = (
+            standard_logging_payload.get("metadata") or {}
+            if isinstance(standard_logging_payload, dict)
+            else {}
+        )
+        _is_cancel_failure = bool(_slm_metadata.get("cancellation_indicator"))
+
         try:
             enum_values = UserAPIKeyLabelValues(
                 end_user=end_user_id,
@@ -1891,17 +1908,36 @@ class PrometheusLogger(CustomLogger):
                     )
                 ),
             )
-            PrometheusLogger._inc_labeled_counter(
-                self,
-                self.litellm_llm_api_failed_requests_metric,
-                "litellm_llm_api_failed_requests_metric",
-                enum_values,
-            )
-            self.set_llm_deployment_failure_metrics(kwargs)
-            await self._set_org_budget_metrics_after_api_request(
-                org_id=user_api_key_org_id,
-                response_cost=0,
-            )
+            if _is_cancel_failure:
+                # Cancellation routed through failure_hook (zero-chunk
+                # streaming cancel, shield_timeout, etc.). Track the
+                # spend so litellm_spend_metric stays in sync with the
+                # DB row. Do NOT increment the failed_requests counter
+                # — that's reserved for actual system failures.
+                _cancel_cost = standard_logging_payload.get("response_cost", 0) or 0
+                PrometheusLogger._inc_labeled_counter(
+                    self,
+                    self.litellm_spend_metric,
+                    "litellm_spend_metric",
+                    enum_values,
+                    amount=float(_cancel_cost),
+                )
+                await self._set_org_budget_metrics_after_api_request(
+                    org_id=user_api_key_org_id,
+                    response_cost=float(_cancel_cost),
+                )
+            else:
+                PrometheusLogger._inc_labeled_counter(
+                    self,
+                    self.litellm_llm_api_failed_requests_metric,
+                    "litellm_llm_api_failed_requests_metric",
+                    enum_values,
+                )
+                self.set_llm_deployment_failure_metrics(kwargs)
+                await self._set_org_budget_metrics_after_api_request(
+                    org_id=user_api_key_org_id,
+                    response_cost=0,
+                )
         except Exception as e:
             verbose_logger.exception(
                 "prometheus Layer Error(): Exception occured - {}".format(str(e))

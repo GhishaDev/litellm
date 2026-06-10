@@ -2926,3 +2926,90 @@ class TestFirstApiCallStartTimeSetOnce:
         assert obj.model_call_details["api_call_start_time"] > first
         assert obj.model_call_details["first_api_call_start_time"] == first
         assert user_meta == {}
+
+
+class TestFailureHandlerCancelCost:
+    """``_failure_handler_helper_fn`` must pre-populate ``response_cost``
+    with the prompt-only cancel cost when the exception is a
+    ``CancelledError``, so downstream SLP-reading callbacks (Prometheus,
+    Langfuse, Custom Callback API, OTel, ...) see a non-zero figure
+    that matches what the DB writer records.
+    """
+
+    def _make_logging_obj(self, model: str, messages: list, provider: str):
+        obj = LitellmLogging(
+            model=model,
+            messages=messages,
+            stream=False,
+            call_type="completion",
+            start_time=time.time(),
+            litellm_call_id="cancel-cost-test",
+            function_id="fn",
+        )
+        # The helper reads model / messages / custom_llm_provider off
+        # model_call_details — populate them the way pre_call would.
+        obj.model_call_details["model"] = model
+        obj.model_call_details["messages"] = messages
+        obj.model_call_details["custom_llm_provider"] = provider
+        return obj
+
+    def test_non_cancel_exception_keeps_response_cost_zero(self):
+        # Sanity: the cancel-cost branch must NOT touch response_cost
+        # for non-cancel failures (e.g. a generic ValueError).
+        import asyncio  # noqa: F401  # for symmetry
+
+        obj = self._make_logging_obj(
+            model="claude-haiku-4-5-20251001",
+            messages=[{"role": "user", "content": "hi"}],
+            provider="anthropic",
+        )
+        obj._failure_handler_helper_fn(
+            exception=ValueError("nope"),
+            traceback_exception="ValueError: nope",
+        )
+        assert obj.model_call_details["response_cost"] == 0
+
+    def test_cancelled_error_populates_prompt_only_cost(self):
+        import asyncio
+
+        obj = self._make_logging_obj(
+            model="claude-haiku-4-5-20251001",
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Explain partial-cancel billing in detail across "
+                        "several paragraphs " * 20
+                    ),
+                }
+            ],
+            provider="anthropic",
+        )
+        obj._failure_handler_helper_fn(
+            exception=asyncio.CancelledError("client disconnect"),
+            traceback_exception="CancelledError",
+        )
+        # Anthropic is in the cost map → compute_prompt_only_cost returns
+        # a strictly positive float. The previous value-of-0 contract
+        # was the bug; assertion locks the new behaviour.
+        assert obj.model_call_details["response_cost"] > 0
+
+    def test_cancelled_error_falls_back_to_zero_on_unknown_model(self):
+        # compute_prompt_only_cost returns 0 for models outside the
+        # litellm cost map. _failure_handler_helper_fn must not raise
+        # in that case and must still leave a finite numeric.
+        import asyncio
+
+        obj = self._make_logging_obj(
+            model="some-totally-unknown-model-xyz",
+            messages=[{"role": "user", "content": "hi"}],
+            provider="custom",
+        )
+        obj._failure_handler_helper_fn(
+            exception=asyncio.CancelledError("client disconnect"),
+            traceback_exception="CancelledError",
+        )
+        # Either 0 (cost map miss, helper returned 0) or something
+        # positive (if token_counter happens to find a default). Both
+        # are valid; the contract is "non-negative numeric, no raise".
+        assert obj.model_call_details["response_cost"] >= 0
