@@ -614,6 +614,25 @@ case_34() {
     fi
 }
 
+# ------------------------------------------------------------------ 35
+# Tier=mock-only — Prometheus metric routing for cancellations.
+# Verifies that cancels do NOT pollute the failed_requests counter
+# while real 503s do, against the real /metrics endpoint (no Counter
+# mocking). Locks in PR #82's Layer 2 routing topology.
+case_35() {
+    echo "[35] cancel prometheus metrics..."
+    local out=/tmp/e2e_case35.out
+    bash e2e/cases/data/35_cancel_prometheus_metrics.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "35 cancel-prometheus-metrics: $(grep -m1 '^PASS' "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "35 cancel-prometheus-metrics" "$(grep -m1 SKIP "$out")"
+    else
+        fail "35 cancel-prometheus-metrics" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # ------------------------------------------------------------------ 33
 # Tier=real — exercises the cancel-billing chain against the real
 # Anthropic API to catch regressions the mock-based 26/27/32 suite
@@ -780,6 +799,7 @@ case_28
 case_29
 case_30
 case_32
+case_35
 
 # Case 34 (time-weighted routing) is mock-only — needs mock-anthropic
 # sidecar and the proxy reachable. Outside --mock-only the fixture
