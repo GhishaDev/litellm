@@ -928,6 +928,23 @@ async def proxy_startup_event(app: FastAPI):  # noqa: PLR0915
             _ar._state_loaded = True
     asyncio.create_task(_adaptive_router_flusher_loop())
 
+    ## TIME-WEIGHTED ROUTING ##
+    # Install Tier A custom strategy if any deployment opts in via
+    # `model_info.time_weights`. Idempotent; no-op when the import is
+    # missing or no deployment opts in. See
+    # litellm_extras/time_weighted_router.py for the schema.
+    if llm_router is not None:
+        try:
+            from litellm_extras.time_weighted_router import (
+                install as _install_time_weighted,
+            )
+
+            _install_time_weighted(llm_router)
+        except ImportError:
+            pass
+        except Exception as _e:
+            verbose_proxy_logger.warning("TimeWeightedRouter install skipped: %s", _e)
+
     ## [Optional] Initialize dd tracer
     ProxyStartupEvent._init_dd_tracer()
 
@@ -5018,6 +5035,22 @@ class ProxyConfig:
 
         if llm_router is not None:
             llm_model_list = llm_router.get_model_list()
+            # Re-evaluate TimeWeightedRouter installation: a DB-driven
+            # model add/update may have introduced (or removed the only)
+            # deployment with `model_info.time_weights`. install() is
+            # idempotent and a no-op when nothing opts in.
+            try:
+                from litellm_extras.time_weighted_router import (
+                    install as _install_time_weighted,
+                )
+
+                _install_time_weighted(llm_router)
+            except ImportError:
+                pass
+            except Exception as _e:
+                verbose_proxy_logger.warning(
+                    "TimeWeightedRouter reinstall skipped: %s", _e
+                )
 
         # check if user set any callbacks in Config Table
         self._add_callbacks_from_db_config(config_data)
