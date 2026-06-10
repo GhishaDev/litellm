@@ -169,20 +169,32 @@ def _derive_delivery_billing_status(
 
     Semantic mapping (see e2e/cases/data/26-33 for end-to-end coverage):
 
-    | scenario                                    | status   | delivery | billing |
-    |---------------------------------------------|----------|----------|---------|
-    | normal full success                         | success  | full     | full    |
-    | streaming cancel WITH chunks                | success  | partial  | partial |
-    | non-stream shield success                   | success  | none     | full    |
-    | non-stream shield_timeout                   | success  | none     | partial |
-    | zero-chunk cancel before dispatch           | success  | none     | none    |
-    | cancel + upstream errored during shield    | success  | none     | partial |
-    | real failure (5xx / auth / hard timeout)    | failure  | none     | none    |
+    | scenario                                       | status   | delivery | billing |
+    |------------------------------------------------|----------|----------|---------|
+    | normal full success                            | success  | full     | full    |
+    | streaming cancel WITH chunks                   | success  | partial  | partial |
+    | streaming cancel BEFORE first chunk            | success  | none     | partial |
+    |   (upstream dispatched, prompt-only billed)    |          |          |         |
+    | non-stream shield success                      | success  | none     | full    |
+    | non-stream shield_timeout                      | success  | none     | partial |
+    | non-stream cancel during upstream wait         | success  | none     | partial |
+    |   (upstream dispatched, prompt-only billed)    |          |          |         |
+    | cancel BEFORE any dispatch (before_upstream)   | success  | none     | none    |
+    | real failure (5xx / auth / hard timeout)       | failure  | none     | none    |
+
+    The "billing=partial" rule for cancels-after-dispatch is the
+    load-bearing semantic: once the proxy started talking to upstream,
+    the upstream consumed the prompt and the failure-hook path runs
+    ``compute_prompt_only_cost`` → positive ``spend`` on the SpendLogs
+    row. ``billing_status`` must reflect that, otherwise the derived
+    label contradicts the actual ``spend`` column.
 
     Inputs (all read from `metadata.get(...)`):
       - status: "success" | "failure"
       - cancellation_indicator: "client_disconnect" | "upstream_disconnect" | None
-      - cancel_phase: CancelPhase value
+      - cancel_phase: CancelPhase value — "before_upstream" means cancel
+        fired before the upstream HTTP call; everything else means we
+        had already dispatched
       - usage_source: CancelUsageSource value
       - bytes_delivered_to_client: int | None
     """
@@ -216,9 +228,22 @@ def _derive_delivery_billing_status(
     if src == "shield_timeout":
         return "none", "partial"
 
-    # Remaining cases — zero-chunk cancel, upstream errored during
-    # shield, no_completion — get the default "none/none" tag.
-    return "none", "none"
+    # Cancel BEFORE any upstream dispatch — nothing was charged.
+    if phase == "before_upstream":
+        return "none", "none"
+
+    # Remaining cases — cancel fired AFTER upstream dispatch but before
+    # we recovered any usage signal. Includes:
+    #   - streaming cancel before first chunk (phase=streaming_partial,
+    #     bytes=0): upstream got the prompt and started generating
+    #   - non-stream cancel during upstream wait (phase=during_upstream)
+    #     where shield gave up via _fallback_to_failure_hook with
+    #     usage_source in (no_completion, None)
+    # In both cases ``proxy_track_cost_callback.async_post_call_failure_hook``
+    # bills ``compute_prompt_only_cost`` → spend > 0 for known models.
+    # billing_status MUST be "partial" to match that real spend, not
+    # "none" which would contradict the row's own ``spend`` column.
+    return "none", "partial"
 
 
 def generate_hash_from_response(response_obj: Any) -> str:

@@ -211,7 +211,10 @@ class TestDeriveDeliveryBillingStatus:
         }
         assert _derive_delivery_billing_status(meta) == ("none", "partial")
 
-    def test_zero_chunk_cancel_yields_none_none(self):
+    def test_before_upstream_cancel_yields_none_none(self):
+        # Cancel fired BEFORE the proxy dispatched anything to upstream.
+        # No upstream charge → spend=0 → billing=none. This is the only
+        # legitimate (none, none) cancel case.
         meta = {
             "cancellation_indicator": "client_disconnect",
             "cancel_phase": "before_upstream",
@@ -219,36 +222,35 @@ class TestDeriveDeliveryBillingStatus:
         }
         assert _derive_delivery_billing_status(meta) == ("none", "none")
 
-    def test_streaming_cancel_with_zero_bytes_yields_none_none(self):
-        # Edge: phase=streaming_partial but bytes_delivered=0 — the cancel
-        # fired so early in the stream that no chunks made it out.
-        # Counts as no delivery.
+    def test_streaming_cancel_with_zero_bytes_yields_none_partial(self):
+        # Cancel fired between "proxy dispatched the request to upstream"
+        # and "first chunk reached the client". Upstream got the prompt
+        # and started generating, so ``compute_prompt_only_cost`` in
+        # ``proxy_track_cost_callback.async_post_call_failure_hook``
+        # bills > 0 for known models. billing_status MUST be "partial"
+        # to match — labeling this (none, none) would contradict the
+        # row's own ``spend`` column.
         meta = {
             "cancellation_indicator": "client_disconnect",
             "cancel_phase": "streaming_partial",
             "bytes_delivered_to_client": 0,
         }
-        assert _derive_delivery_billing_status(meta) == ("none", "none")
+        assert _derive_delivery_billing_status(meta) == ("none", "partial")
 
-    def test_cancel_upstream_error_during_shield_yields_none_partial(self):
-        # Cancel fired, shield-and-wait kicked in, but upstream errored
-        # during the shield window. cancel_finalize tags it
-        # usage_source="no_completion" / upstream_completed=False.
-        # We bill prompt-only (none/partial), NOT (none/none), because
-        # we still incurred the upstream request — see semantic mapping
-        # docstring in the derivation helper.
-        # NOTE: the derivation here lands on (none, none) under the
-        # current rule because usage_source != shield_timeout. This
-        # test pins that behaviour. If we later want to separate
-        # "shield-window upstream error" from "before dispatch", we'd
-        # add a new CancelUsageSource value like "upstream_errored".
+    def test_cancel_during_upstream_no_completion_yields_none_partial(self):
+        # Non-stream cancel routed through _fallback_to_failure_hook
+        # because the shield wait gave up without recovering a usage
+        # object (upstream errored or stalled). The prompt was
+        # dispatched → prompt-only billing fires → billing=partial.
+        # Previously the rule labeled this (none, none) — that
+        # contradicted the positive spend on the actual row.
         meta = {
             "cancellation_indicator": "client_disconnect",
             "cancel_phase": "during_upstream",
             "upstream_completed": False,
             "usage_source": "no_completion",
         }
-        assert _derive_delivery_billing_status(meta) == ("none", "none")
+        assert _derive_delivery_billing_status(meta) == ("none", "partial")
 
 
 class TestMaterializeDeliveryBillingStatus:
