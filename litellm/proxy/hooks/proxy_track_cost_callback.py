@@ -77,13 +77,25 @@ class _ProxyDBLogger(CustomLogger):
 
         from litellm.proxy.proxy_server import proxy_logging_obj
 
+        # Detect whether this failure path is actually serving a client
+        # cancellation (CancelledError propagated through
+        # cancel_finalize._fallback_to_failure_hook). When it is, the
+        # SpendLogs row must stay ``status="success"`` — cancellation is
+        # not a system failure; the proxy did its job, the client gave up.
+        # The cancel taxonomy (was-it-cancelled / did-we-deliver /
+        # did-we-bill) lives in metadata markers + the derived
+        # delivery_status / billing_status fields. Cancel markers already
+        # set on request_data.litellm_params.metadata by cancel_finalize
+        # must NOT be clobbered.
+        _is_cancel = isinstance(original_exception, asyncio.CancelledError)
+
         _metadata = dict(
             LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(
                 user_api_key_dict=user_api_key_dict
             )
         )
         _metadata["user_api_key"] = user_api_key_dict.api_key
-        _metadata["status"] = "failure"
+        _metadata["status"] = "success" if _is_cancel else "failure"
         _error_information = StandardLoggingPayloadSetup.get_error_information(
             original_exception=original_exception,
             traceback_str=traceback_str,
@@ -120,6 +132,24 @@ class _ProxyDBLogger(CustomLogger):
         # Preserve tags from existing metadata
         if existing_litellm_metadata.get("tags"):
             existing_metadata["tags"] = existing_litellm_metadata.get("tags")
+
+        # Preserve cancellation markers written by cancel_finalize before
+        # the failure hook ran. Without this, the cancel taxonomy gets
+        # stripped on every cancelled request that took the
+        # fallback-to-failure-hook path (zero-chunk cancels in particular)
+        # — and the downstream _derive_delivery_billing_status helper
+        # would not be able to tell a real failure from a cancellation.
+        for _cancel_field in (
+            "cancellation_indicator",
+            "cancel_phase",
+            "bytes_delivered_to_client",
+            "upstream_completed",
+            "usage_source",
+        ):
+            if _cancel_field in existing_litellm_metadata:
+                existing_metadata[_cancel_field] = existing_litellm_metadata[
+                    _cancel_field
+                ]
 
         request_data["litellm_params"]["proxy_server_request"] = (
             request_data.get("proxy_server_request")
@@ -162,9 +192,36 @@ class _ProxyDBLogger(CustomLogger):
             if obj_start is not None:
                 actual_start_time = obj_start
 
+        # Bridge cancel markers — runs late as a safety net in case some
+        # code path didn't pre-bridge (we already preserve markers from
+        # litellm_params.metadata above; this catches the case where the
+        # markers are on logging_obj but never landed in litellm_params).
+        from litellm.litellm_core_utils.cancel_billing import (
+            compute_prompt_only_cost,
+            enrich_request_metadata_with_cancel_markers,
+        )
+
+        enrich_request_metadata_with_cancel_markers(
+            request_data=request_data,
+            logging_obj=_litellm_logging_obj,
+        )
+
+        # For cancellations that landed in the failure-hook (i.e. zero
+        # chunks were received before client disconnected), bill the
+        # prompt-only baseline instead of the hardcoded 0.0. Upstream
+        # still received the prompt and started processing — see
+        # cancel_billing.py docstring for the full rationale.
+        billed_cost = 0.0
+        if isinstance(original_exception, asyncio.CancelledError):
+            billed_cost = compute_prompt_only_cost(
+                messages=request_data.get("messages"),
+                model=request_data.get("model"),
+                custom_llm_provider=request_data.get("custom_llm_provider"),
+            )
+
         await proxy_logging_obj.db_spend_update_writer.update_database(
             token=user_api_key_dict.api_key,
-            response_cost=0.0,
+            response_cost=billed_cost,
             user_id=user_api_key_dict.user_id,
             end_user_id=user_api_key_dict.end_user_id,
             team_id=user_api_key_dict.team_id,

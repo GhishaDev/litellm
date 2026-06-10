@@ -46,6 +46,8 @@ Status legend:
 | PR #52 (Wave 5c) | READY | `fix(anthropic): extend transform_to_anthropic_error to cover broader status code set` | Smallest diff in the queue — builds on upstream's existing helper. Good warm-up after #29748. |
 | PR #60 + #67 (Wave 6e + Layer 1 fix) | READY | `fix(proxy): record TTFT on passthrough streaming path + apply per-deployment overrides before fast_path SSE short-circuit` | The fast_path piece (#67) is a regression introduced by upstream PR #28289 — file directly with that PR's commit referenced. Pair with passthrough TTFT (#60). |
 | PR #48 (Wave 3 small UI fixes) | READY | Three UI fixes: Gemini provider `api_base` field on credential form; credential-form reset on close; Mode badge rendering on model_list | All independent. File as a single PR with 3 commits since they all touch the credential form area. |
+| fix/billing-accuracy-phase-1 (Phase 1 — first commit) | READY | `fix(streaming): reset Anthropic message_start cursor (output_tokens=1) when no message_delta arrives` | Independent, smallest-blast-radius bug in the cancel-billing series. `stream_chunk_builder_utils.py` cursor=1 escape valve. Pure Tier C. Can be filed BEFORE Phase 3 dogfood completes. |
+| fix/billing-accuracy-phase-1 (Phase 1 — black-hole catch) | READY | `feat(cancel): catch asyncio.CancelledError in streaming + non-stream proxy paths` | The Phase 1 "BaseException slipping through `except Exception`" hole. SpendLogs row + Langfuse trace closure for cancelled requests. Tier C; mechanism only — the billing strategy stays in our metadata derivation (see Phase 3 row below). |
 
 ### Tier D — issue first, then mechanism PR
 
@@ -59,6 +61,7 @@ or `ship/<pin>` config.
 | PR #54 (Wave 5a) | ISSUE-FIRST | Add `cache_ttl` label to `litellm_input_cache_creation_tokens_metric` (Anthropic 5m vs 1h split) | Mechanism = label; opinion = whether `prompt_cache_*_tokens_metric` should be dropped. File issue documenting why per-TTL bucketing matters for cost attribution. |
 | PR #53 (Wave 5b) | ISSUE-FIRST | Per-deployment `returned_model_name` override | Mechanism = the field on `model_list[].litellm_params`. Existing upstream `_override_openai_response_model` is per-call, not per-deployment. Issue should reference this gap. |
 | PR #59 (Wave 6d) | ISSUE-FIRST | Two related opt-ins: thinking-signature retry flag; `anthropic_beta_overrides` per-deployment | Combined Anthropic-features PR. The `anthropic_beta_overrides` part needs the Bedrock-gateway use case in the issue. |
+| fix/billing-accuracy-phase-1 (Phase 3 — cancel taxonomy) | ISSUE-FIRST | Cancel-billing taxonomy: orthogonal `delivery_status` + `billing_status` in metadata, derived from existing cancel markers | **Upstream-friendly: StandardLoggingPayloadStatus stays binary (matches upstream)**; all new fields are additive Optional metadata. Issue should propose the 7-row semantic mapping (normal / streaming-partial / shield-success / shield-timeout / zero-chunk / cancel-upstream-error / failure) + the derivation helper as the single source of truth. Dogfood for one internal release before filing the issue. Tier D because we're shipping our derivation as the default policy. See `e2e/cases/data/26-33_*.sh` + the spend_tracking_utils derivation function for spec. |
 
 ### Dependent PRs (file after a prerequisite lands)
 
@@ -89,4 +92,4 @@ For reference only. Do NOT submit:
 - Last reviewed / refreshed: keep a `_Last reviewed: YYYY-MM-DD_` note
   at the very bottom so quarterly reviews can spot stale entries
 
-_Last reviewed: 2026-06-05 (cut at v1.87.0 bump completion; first upstream PR #29748 OPEN)._
+_Last reviewed: 2026-06-10 (added fix/billing-accuracy-phase-1 candidates after Phase 3 refactor landed + real-Anthropic case 33 verified)._

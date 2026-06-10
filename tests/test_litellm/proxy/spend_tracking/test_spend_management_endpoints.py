@@ -377,6 +377,19 @@ ignored_keys = [
     "metadata.attempted_retries",
     "metadata.max_retries",
     "metadata.eval_information",
+    # Cancel taxonomy markers + derived dimensions are always present
+    # in SpendLogsMetadata (None for non-cancelled rows). These tests
+    # build their expected dicts from a hand-rolled fixture that
+    # pre-dates the cancellation fields — ignore them here, the
+    # dedicated test_spend_logs_cancellation_metadata.py file covers
+    # their propagation in detail.
+    "metadata.cancellation_indicator",
+    "metadata.cancel_phase",
+    "metadata.bytes_delivered_to_client",
+    "metadata.upstream_completed",
+    "metadata.usage_source",
+    "metadata.delivery_status",
+    "metadata.billing_status",
 ]
 
 MODEL_LIST = [
@@ -1410,6 +1423,10 @@ async def test_ui_view_spend_logs_unauthorized(client):
 
 @pytest.mark.asyncio
 async def test_ui_view_spend_logs_with_status(client, monkeypatch):
+    # The status_filter is binary: success | failure. Cancellations
+    # are NOT a top-level filter — they carry status='success' plus a
+    # metadata marker, surface in the UI as a row-level badge, and
+    # remain visible under the "Success" filter.
     mock_spend_logs = [
         {
             "id": "log1",
@@ -1421,6 +1438,7 @@ async def test_ui_view_spend_logs_with_status(client, monkeypatch):
             "startTime": datetime.datetime.now(timezone.utc).isoformat(),
             "model": "gpt-3.5-turbo",
             "status": "success",
+            "metadata": {},
         },
         {
             "id": "log2",
@@ -1432,14 +1450,33 @@ async def test_ui_view_spend_logs_with_status(client, monkeypatch):
             "startTime": datetime.datetime.now(timezone.utc).isoformat(),
             "model": "gpt-4",
             "status": "failure",
+            "metadata": {},
+        },
+        # Cancellation row: status='success' + marker. Stays in the
+        # Success bucket.
+        {
+            "id": "log3",
+            "request_id": "req3",
+            "api_key": "sk-test-key",
+            "user": "test_user_3",
+            "team_id": "team1",
+            "spend": 0.02,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+            "status": "success",
+            "metadata": {"cancellation_indicator": "client_disconnect"},
         },
     ]
 
     def filter_by_status(where):
+        # "success" filter shape:
+        #   {"OR": [{"status": {"equals": "success"}}, {"status": None}]}
+        # "failure" filter shape:
+        #   {"status": {"equals": "failure"}}
         if "OR" in where:
-            return [mock_spend_logs[0]]  # success
+            return [row for row in mock_spend_logs if row["status"] == "success"]
         if "status" in where and where["status"].get("equals") == "failure":
-            return [mock_spend_logs[1]]
+            return [row for row in mock_spend_logs if row["status"] == "failure"]
         return mock_spend_logs
 
     monkeypatch.setattr(
@@ -1453,7 +1490,8 @@ async def test_ui_view_spend_logs_with_status(client, monkeypatch):
         user_role=LitellmUserRoles.PROXY_ADMIN
     )
     try:
-        # Test success status
+        # success → log1 + log3 (both status='success'; the
+        # cancellation row stays in the Success bucket).
         response = client.get(
             "/spend/logs/ui",
             params={
@@ -1463,14 +1501,13 @@ async def test_ui_view_spend_logs_with_status(client, monkeypatch):
             },
             headers={"Authorization": "Bearer sk-test"},
         )
-
         assert response.status_code == 200
         data = response.json()
-        assert data["total"] == 1
-        assert len(data["data"]) == 1
-        assert data["data"][0]["status"] == "success"
+        assert data["total"] == 2
+        request_ids = {row["request_id"] for row in data["data"]}
+        assert request_ids == {"req1", "req3"}
 
-        # Test failure status
+        # failure → log2 only.
         response = client.get(
             "/spend/logs/ui",
             params={
@@ -1480,7 +1517,6 @@ async def test_ui_view_spend_logs_with_status(client, monkeypatch):
             },
             headers={"Authorization": "Bearer sk-test"},
         )
-
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 1

@@ -285,6 +285,34 @@ Tests live in `tests/test_litellm/` (unit), `tests/llm_translation/`
 (per-provider integration), `tests/proxy_unit_tests/` (proxy), and
 `tests/load_tests/`. Full-stack scenarios go in `e2e/cases/`.
 
+- **No theater tests — mock the boundary, not the unit under test.**
+  A test that mocks out the very function or module it is supposed to
+  exercise, then asserts "the mock was called" or "the mock's return
+  value flowed through," verifies nothing real. It looks green in CI
+  but cannot catch a bug in the production code it ostensibly covers.
+  Classic anti-patterns to refuse:
+  - `MyModule.foo = MagicMock(return_value=fake); … ; assert
+    other.bar.call_args.kwargs["x"] is fake` — you tested that
+    Python can pass references.
+  - `obj.handler = AsyncMock(); … ; assert obj.handler.called` —
+    you tested that your code calls a method you told it to call.
+  - All-MagicMock stubs of objects whose real interface might drift —
+    the test passes against a contract that does not exist in prod.
+  - Asserting a Literal/Enum value at runtime (`assert
+    MyLiteral == "value"`) — that is mypy's job, not the test's.
+
+  The fix is to mock the **process / network boundary** (httpx
+  transport, DB cursor, fanout queue, OS clock) and let the unit
+  under test run against real inputs producing real outputs. For
+  observable side effects (a callback firing, a row written), use a
+  **spy fake** — a real class that captures the actual arguments it
+  receives — and assert on the captured *data*, not on `.called`.
+  Example: instead of mocking `stream_chunk_builder`, pass real
+  `ModelResponseStream` chunks in and assert on the reassembled
+  response's `usage.completion_tokens`. The test now catches a
+  cursor-handling regression in `stream_chunk_builder` itself; the
+  theater version cannot.
+
 - **Write assertions from the spec, not the impl.** For new features,
   the `e2e/cases/NN_*.md` runbook IS the spec — write it before the
   fixture and the impl. For bug fixes, the issue's repro steps are the

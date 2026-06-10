@@ -2514,6 +2514,70 @@ class AdapterCompletionStreamWrapper:
             raise StopAsyncIteration
 
 
+CancelPhase = Literal[
+    "before_upstream",
+    "during_upstream",
+    "streaming_partial",
+    "during_parsing",
+]
+"""
+When during the request lifecycle the client cancellation was detected.
+Used by litellm/litellm_core_utils/cancel_billing.py to drive the cancel
+billing strategy:
+- before_upstream: cancel before LiteLLM sent anything to provider → no charge
+- during_upstream: non-stream cancel while awaiting provider response →
+  shielded wait for upstream to complete (so we can bill real usage),
+  or fall back to prompt-only on shield timeout
+- streaming_partial: stream cancelled with at least one chunk already
+  flushed to client → bill prompt + estimated/real output from chunks
+- during_parsing: provider returned, LiteLLM was parsing the response when
+  cancelled → bill real usage from the (already-received) response
+"""
+
+
+CancelUsageSource = Literal[
+    "upstream_truth",  # full usage from upstream (e.g. anthropic message_delta)
+    "tokenizer_estimate",  # local token_counter on received chunk text
+    "upstream_completed_after_cancel",  # non-stream shield succeeded
+    "shield_timeout",  # non-stream shield exceeded timeout → prompt-only fallback
+    "no_completion",  # zero-byte cancel, bills only the input prompt
+]
+"""
+Provenance of the usage numbers recorded for a cancelled request.
+Surfaced in dashboards to spot deployment-specific billing weirdness
+(e.g. a network gateway swallowing message_delta would push the
+`tokenizer_estimate` share up for that deployment).
+"""
+
+
+DeliveryStatus = Literal["full", "partial", "none"]
+"""
+What the client actually received from the proxy. Independent of billing.
+
+- full:    response body delivered end-to-end (normal success).
+- partial: at least one byte / chunk reached the client but the stream
+           was cut (streaming cancel mid-flight, network drop).
+- none:    nothing reached the client (zero-chunk cancel, non-stream
+           shield path, real failure).
+"""
+
+
+BillingStatus = Literal["full", "partial", "none"]
+"""
+What was charged to the customer. Independent of delivery.
+
+- full:    canonical usage from upstream OR accurate reconstruction
+           from chunks. Used for fully-served calls AND for non-stream
+           shield-success (upstream returned real usage after the
+           client disconnected).
+- partial: prompt-only / tokenizer-estimate billing (shield_timeout,
+           upstream errored during shield wait, etc.). Real cost but
+           lower precision.
+- none:    zero billable work captured (zero-chunk cancel before
+           dispatch, hard failures with no upstream usage). ``spend=0``.
+"""
+
+
 class StandardLoggingUserAPIKeyMetadata(TypedDict):
     user_api_key_hash: Optional[str]  # hash of the litellm virtual key used
     user_api_key_alias: Optional[str]
@@ -2651,6 +2715,58 @@ class StandardLoggingMetadata(StandardLoggingUserAPIKeyMetadata):
     ]  # S3/GCS object key for cold storage retrieval
     team_alias: Optional[str]
     team_id: Optional[str]
+    # === Client cancellation tracking ===
+    # All fields below are populated by the cancel-billing path in
+    # litellm_core_utils/cancel_billing.py. Each is Optional and only present
+    # on requests where the client disconnected before the response completed.
+    # The top-level `status` stays "success" for cancellations (cancel != system
+    # failure); cancel-vs-normal-success is encoded in cancellation_indicator,
+    # and delivery_status / billing_status carry the orthogonal taxonomy.
+    cancellation_indicator: Optional[
+        Literal["client_disconnect", "upstream_disconnect"]
+    ]
+    """
+    Set when the request did not complete naturally. "client_disconnect" is
+    the typical 499 case (client cancelled / browser tab closed / SDK timeout);
+    "upstream_disconnect" is for upstream-initiated cuts (rare, e.g. provider
+    sends RST mid-stream). Presence of this field — not `status` — is what
+    distinguishes a cancelled-but-billable request from a clean success.
+    """
+    cancel_phase: Optional[CancelPhase]
+    """Lifecycle phase when cancellation was detected — see CancelPhase docs."""
+    bytes_delivered_to_client: Optional[int]
+    """
+    Total bytes flushed to the client socket before disconnect. For streaming,
+    this is the sum of SSE chunk bytes that were ACK'd. Useful for client-vs-
+    upstream gap analysis: zero bytes delivered + non-zero upstream usage =
+    client paid for compute it never received.
+    """
+    upstream_completed: Optional[bool]
+    """
+    Whether the upstream provider call ran to completion. For a cancellation:
+    - True: shielded wait succeeded (usage_source=upstream_completed_after_cancel)
+      or message_delta arrived before cancel (usage_source=upstream_truth)
+    - False: cancel killed the upstream call before it returned a final usage
+      object (usage_source=tokenizer_estimate / shield_timeout / no_completion)
+    """
+    usage_source: Optional[CancelUsageSource]
+    """
+    Provenance of the recorded usage. Surface this in dashboards as a per-
+    deployment metric — a deployment with a high `tokenizer_estimate` share
+    likely has a network gateway swallowing upstream usage fields.
+    """
+    delivery_status: Optional[DeliveryStatus]
+    """
+    Orthogonal dimension to `status`: what the client actually received.
+    Derived in spend_tracking_utils._derive_delivery_billing_status from
+    the five cancel markers above + raw status. Materialized into the
+    SpendLogs metadata JSON column so dashboards can filter on it.
+    """
+    billing_status: Optional[BillingStatus]
+    """
+    Orthogonal dimension to `status`: what we actually billed. See
+    delivery_status note for derivation details.
+    """
 
 
 class StandardLoggingAdditionalHeaders(TypedDict, total=False):
@@ -2828,6 +2944,22 @@ class GuardrailTracingDetail(TypedDict, total=False):
 
 
 StandardLoggingPayloadStatus = Literal["success", "failure"]
+"""
+Binary system-health status for the request. Aligned with upstream LiteLLM.
+
+- success: the request did not error at the system level. Includes both
+  fully-served requests AND client cancellations (cancellation is NOT a
+  system failure — the proxy did its job; the client gave up). For finer-
+  grained billing/delivery reporting, see ``delivery_status`` and
+  ``billing_status`` in StandardLoggingMetadata.
+- failure: the request errored before billable work could complete
+  (auth reject, upstream 5xx with no usage, hard timeout, etc.).
+
+The cancellation taxonomy lives entirely in optional metadata fields:
+``cancellation_indicator``, ``cancel_phase``, ``usage_source``,
+``upstream_completed``, ``bytes_delivered_to_client``,
+``delivery_status``, ``billing_status``.
+"""
 
 
 class CachingDetails(TypedDict):

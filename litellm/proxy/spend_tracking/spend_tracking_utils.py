@@ -109,6 +109,19 @@ def _get_spend_logs_metadata(
             attempted_retries=None,
             max_retries=None,
             cost_breakdown=None,
+            # Cancellation fields default to None; populated only by the
+            # cancel-billing path. delivery_status / billing_status are
+            # derived from the markers + raw status by
+            # _derive_delivery_billing_status; we set both to None on
+            # the early-failure path (this branch is only hit when
+            # metadata itself is missing).
+            cancellation_indicator=None,
+            cancel_phase=None,
+            bytes_delivered_to_client=None,
+            upstream_completed=None,
+            usage_source=None,
+            delivery_status=None,
+            billing_status=None,
         )
     verbose_proxy_logger.debug(
         "getting payload for SpendLogs, available keys in metadata: "
@@ -134,7 +147,78 @@ def _get_spend_logs_metadata(
     clean_metadata["litellm_overhead_time_ms"] = litellm_overhead_time_ms
     clean_metadata["cost_breakdown"] = cost_breakdown
 
+    # Materialize the orthogonal taxonomy: derive delivery_status and
+    # billing_status from the five cancel markers + raw status, then write
+    # them back so SQL dashboards can filter directly
+    # (`WHERE metadata::jsonb->>'delivery_status' = 'partial'`). Single
+    # source of truth — write sites must not set these directly.
+    _delivery, _billing = _derive_delivery_billing_status(metadata)
+    clean_metadata["delivery_status"] = _delivery
+    clean_metadata["billing_status"] = _billing
+
     return clean_metadata
+
+
+def _derive_delivery_billing_status(
+    metadata: dict,
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    Derive (delivery_status, billing_status) from the five cancel markers
+    + raw status. Single source of truth — never write delivery_status /
+    billing_status from anywhere else.
+
+    Semantic mapping (see e2e/cases/data/26-33 for end-to-end coverage):
+
+    | scenario                                    | status   | delivery | billing |
+    |---------------------------------------------|----------|----------|---------|
+    | normal full success                         | success  | full     | full    |
+    | streaming cancel WITH chunks                | success  | partial  | partial |
+    | non-stream shield success                   | success  | none     | full    |
+    | non-stream shield_timeout                   | success  | none     | partial |
+    | zero-chunk cancel before dispatch           | success  | none     | none    |
+    | cancel + upstream errored during shield    | success  | none     | partial |
+    | real failure (5xx / auth / hard timeout)    | failure  | none     | none    |
+
+    Inputs (all read from `metadata.get(...)`):
+      - status: "success" | "failure"
+      - cancellation_indicator: "client_disconnect" | "upstream_disconnect" | None
+      - cancel_phase: CancelPhase value
+      - usage_source: CancelUsageSource value
+      - bytes_delivered_to_client: int | None
+    """
+    raw_status = metadata.get("status")
+    if raw_status == "failure":
+        return "none", "none"
+
+    cancel_ind = metadata.get("cancellation_indicator")
+    if not cancel_ind:
+        # No cancel marker → fall through as a normal success.
+        return "full", "full"
+
+    src = metadata.get("usage_source")
+    phase = metadata.get("cancel_phase")
+    bytes_delivered = metadata.get("bytes_delivered_to_client") or 0
+
+    # Channel A: streaming cancel with chunks actually delivered.
+    # bytes_delivered is populated in finalize_streaming_cancel after
+    # _get_accumulated_chunks confirms chunks > 0, so this branch
+    # only matches when something genuinely reached the client.
+    if phase == "streaming_partial" and bytes_delivered > 0:
+        return "partial", "partial"
+
+    # Channel B-success: non-stream shield wait succeeded — upstream
+    # came back with real usage AFTER the client disconnected.
+    if src == "upstream_completed_after_cancel":
+        return "none", "full"
+
+    # Channel B-timeout: shield budget exceeded; we billed the prompt
+    # baseline.
+    if src == "shield_timeout":
+        return "none", "partial"
+
+    # Remaining cases — zero-chunk cancel, upstream errored during
+    # shield, no_completion — get the default "none/none" tag.
+    return "none", "none"
 
 
 def generate_hash_from_response(response_obj: Any) -> str:
@@ -1094,11 +1178,25 @@ def _get_status_for_spend_log(
     metadata: dict,
 ) -> Literal["success", "failure"]:
     """
-    Get the status for the spend log.
+    Get the binary top-level ``status`` column value for a SpendLogs row.
 
-    It's only a failure if metadata.get("status") is "failure"
+    - "failure":  metadata.status == "failure" (real provider/auth error,
+                  hard timeout, anything that errored before billable work
+                  could complete)
+    - "success":  everything else, INCLUDING client cancellations.
+
+    The cancellation taxonomy (was-it-cancelled? did-we-deliver? did-we-bill?)
+    lives entirely in the JSON metadata blob, not in this column:
+      - metadata.cancellation_indicator      — presence ⇒ cancelled
+      - metadata.cancel_phase / usage_source — forensics
+      - metadata.delivery_status             — "full" | "partial" | "none"
+      - metadata.billing_status              — "full" | "partial" | "none"
+
+    Cancellations land on status="success" because the proxy itself did
+    not error — the client gave up. Dashboards distinguishing cancels
+    must filter on ``metadata::jsonb->>'cancellation_indicator' IS NOT NULL``
+    (or the derived delivery/billing_status fields), NOT on this column.
     """
-    _status: Optional[str] = metadata.get("status", None)
-    if _status == "failure":
+    if metadata.get("status") == "failure":
         return "failure"
     return "success"

@@ -46,7 +46,7 @@ done
 # Tier=real cases that --mock-only skips. See e2e/cases/README.md index.
 # 04 + 06 are Tier=both (cache metrics ABSENT — provable on mock); the
 # rest of 01-09 verify cache TOKEN VALUES that real providers compute.
-REAL_ONLY_CASES="01 02 03 05 08 09 19"
+REAL_ONLY_CASES="01 02 03 05 08 09 19 33"
 
 is_real_only() {
     local n="$1"
@@ -505,6 +505,133 @@ case_25() {
     fi
 }
 
+# ------------------------------------------------------------------ 26
+case_26() {
+    echo "[26] cancel billing → cancelled SpendLogs row (status=success + marker)..."
+    local out=/tmp/e2e_case26.out
+    bash e2e/cases/data/26_cancel_billing_partial.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "26 cancel-billing: $(grep -m1 '^PASS: all' "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "26 cancel-billing" "$(grep -m1 SKIP "$out")"
+    else
+        fail "26 cancel-billing" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
+# ------------------------------------------------------------------ 27
+case_27() {
+    echo "[27] non-stream cancel → shield+wait..."
+    local out=/tmp/e2e_case27.out
+    bash e2e/cases/data/27_non_stream_cancel_shield.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "27 non-stream-cancel: $(grep -m1 '^PASS' "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "27 non-stream-cancel" "$(grep -m1 SKIP "$out")"
+    else
+        fail "27 non-stream-cancel" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
+# ------------------------------------------------------------------ 28
+case_28() {
+    echo "[28] /v1/messages cancel..."
+    local out=/tmp/e2e_case28.out
+    bash e2e/cases/data/28_v1_messages_cancel.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "28 v1-messages-cancel: $(grep -m1 '^PASS' "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "28 v1-messages-cancel" "$(grep -m1 SKIP "$out")"
+    else
+        fail "28 v1-messages-cancel" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
+# ------------------------------------------------------------------ 29
+case_29() {
+    echo "[29] real upstream 5xx stays status=failure..."
+    local out=/tmp/e2e_case29.out
+    bash e2e/cases/data/29_failure_not_polluted.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "29 failure-not-polluted: $(grep -m1 '^PASS' "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "29 failure-not-polluted" "$(grep -m1 SKIP "$out")"
+    else
+        fail "29 failure-not-polluted" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
+# ------------------------------------------------------------------ 30
+case_30() {
+    echo "[30] shield_timeout path..."
+    local out=/tmp/e2e_case30.out
+    bash e2e/cases/data/30_shield_timeout.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "30 shield-timeout: $(grep -m1 '^PASS' "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "30 shield-timeout" "$(grep -m1 SKIP "$out")"
+    else
+        fail "30 shield-timeout" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
+# ------------------------------------------------------------------ 32
+case_32() {
+    echo "[32] concurrent stream cancels..."
+    local out=/tmp/e2e_case32.out
+    bash e2e/cases/data/32_concurrent_cancels.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "32 concurrent-cancels: $(grep -m1 '^PASS' "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "32 concurrent-cancels" "$(grep -m1 SKIP "$out")"
+    else
+        fail "32 concurrent-cancels" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
+# ------------------------------------------------------------------ 34
+# Tier=mock-only — TimeWeightedRouter (litellm_extras/) end-to-end. The
+# fixture registers mock deployments, drives wall-clock-bound bands, and
+# asserts that PATCH-driven hot reload, blocked exclusion, and the
+# delegate path for non-opt-in models all behave correctly.
+case_34() {
+    echo "[34] time-weighted routing..."
+    local out=/tmp/e2e_case34.out
+    python3 e2e/cases/data/34_time_weighted_routing.py > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "34 time-weighted-routing: $(grep -m1 '^PASS' "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "34 time-weighted-routing" "$(grep -m1 SKIP "$out")"
+    else
+        fail "34 time-weighted-routing" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
+# ------------------------------------------------------------------ 33
+# Tier=real — exercises the cancel-billing chain against the real
+# Anthropic API to catch regressions the mock-based 26/27/32 suite
+# can't (cursor=1 on genuine Anthropic streams, real cost-map lookup).
+case_33() {
+    echo "[33] real anthropic cancel..."
+    local out=/tmp/e2e_case33.out
+    bash e2e/cases/data/33_real_anthropic_cancel.sh > "$out" 2>&1
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        ok "33 real-anthropic-cancel: $(grep -m1 '^PASS' "$out")"
+    elif [ "$rc" -eq 77 ]; then
+        skip "33 real-anthropic-cancel" "$(grep -m1 SKIP "$out")"
+    else
+        fail "33 real-anthropic-cancel" "$(grep -m1 '^FAIL' "$out" || tail -2 "$out")"
+    fi
+}
+
 # Pre-flight: proxy must be ready
 if ! curl -sSL --max-time 3 -o /dev/null -w '%{http_code}' \
         "$PROXY/health/readiness" 2>/dev/null | grep -q '^2'; then
@@ -639,6 +766,34 @@ case_24
 # provider calls, all curls go to /v1/chat/completions auth-failure
 # paths or /key/generate. Safe outside --mock-only.
 case_25
+
+# Case 26 (cancel billing → cancelled SpendLogs row). Requires the
+# mock provider so we can deterministically pace streams and cancel
+# them mid-flight without burning real provider $. Skipped outside
+# --with-mock (mock container won't be reachable).
+case_26
+
+# Cases 27-32 are the Phase 1 cancel-billing expansion suite, all
+# mock-only. See e2e/cases/26_*.md for the overall design context.
+case_27
+case_28
+case_29
+case_30
+case_32
+
+# Case 34 (time-weighted routing) is mock-only — needs mock-anthropic
+# sidecar and the proxy reachable. Outside --mock-only the fixture
+# still self-protects (skips when /health/readiness or mock are down).
+if [ "$MOCK_ONLY" -eq 1 ]; then
+    case_34
+fi
+
+# Case 33 is Tier=real — exercises the cancel-billing chain against
+# the real Anthropic API. _dispatch routes it through
+# REAL_ONLY_CASES (skips on --mock-only). When run without
+# --mock-only and ANTHROPIC_API_KEY is unset, the fixture itself
+# exits 77 as a second-layer safety net.
+_dispatch 33 real-anthropic-cancel
 
 echo
 echo "============ SUMMARY ============"

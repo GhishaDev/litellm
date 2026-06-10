@@ -7029,6 +7029,41 @@ async def async_data_generator(  # noqa: PLR0915
             yield error_message
         done_message = "[DONE]"
         yield f"data: {done_message}\n\n"
+    except asyncio.CancelledError:
+        # Client cancelled (most common: closed the SSE connection, SDK
+        # timeout, browser tab closed). asyncio.CancelledError is a
+        # BaseException in Python 3.8+, so the generic `except Exception`
+        # below does NOT catch it; without this branch the stream
+        # disappears into a logging black hole — no SpendLogs row, no
+        # Langfuse trace closure, no Prometheus counter, but the
+        # upstream provider already billed us for whatever was
+        # generated. See litellm_core_utils/cancel_finalize.py for the
+        # full motivation.
+        #
+        # The finalize helper is shielded internally and must not raise.
+        # We re-raise CancelledError after it returns to preserve
+        # asyncio's cancellation contract — swallowing the signal
+        # would leak the request task and confuse anyio task groups.
+        from litellm.litellm_core_utils.cancel_finalize import (
+            finalize_streaming_cancel,
+        )
+
+        # Prefer response.logging_obj; fall back to the proxy's
+        # request-scoped Logging instance. See the equivalent block in
+        # common_request_processing.async_streaming_data_generator for
+        # the full rationale.
+        logging_obj = (
+            getattr(response, "logging_obj", None) if response is not None else None
+        )
+        if logging_obj is None:
+            logging_obj = request_data.get("litellm_logging_obj")
+        await finalize_streaming_cancel(
+            stream_wrapper=response,
+            logging_obj=logging_obj,
+            user_api_key_dict=user_api_key_dict,
+            request_data=request_data,
+        )
+        raise
     except Exception as e:
         log_proxy_exception(verbose_proxy_logger, "/v1/chat/completions[stream]", e)
         await proxy_logging_obj.post_call_failure_hook(

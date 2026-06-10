@@ -76,6 +76,12 @@ services:
     environment:
       LITELLM_MASTER_KEY: "sk-e2e-test"
       LITELLM_LOG: "WARNING"
+      # Short shield timeout for e2e case 30 (shield_timeout). The
+      # production default is 60s — appropriate for real workloads but
+      # too long to drive in CI. 2s lets case 30 deterministically
+      # trigger the asyncio.TimeoutError branch in
+      # finalize_non_stream_cancel without blocking the suite.
+      LITELLM_CANCEL_SHIELD_TIMEOUT_S: "2"
       # Match the user's production env: force using the locally-bundled
       # model_prices JSON instead of fetching the latest from GitHub.
       LITELLM_LOCAL_MODEL_COST_MAP: "True"
