@@ -21,6 +21,12 @@ export function getLogFilterOptions(accessToken: string): FilterOption[] {
         { label: "Success", value: "success" },
         { label: "Failure", value: "failure" },
       ],
+      // Cancellations carry status="success" + a metadata marker —
+      // they show up under "Success" with an amber "Cancel 499"
+      // badge in the row (see columns.tsx). No separate filter
+      // entry: the dashboard's status taxonomy is genuinely binary,
+      // and cancellation is a row-level annotation not a top-level
+      // category.
     },
     {
       name: "Model",

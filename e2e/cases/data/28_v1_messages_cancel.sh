@@ -4,7 +4,9 @@
 # Verifies that the cancellation catch in
 # litellm/proxy/common_request_processing.py:async_streaming_data_generator
 # fires for the Anthropic-native /v1/messages endpoint and propagates
-# the success_partial markers into the SpendLogs row.
+# the cancellation markers into the SpendLogs row (the row carries
+# status="success" + cancellation_indicator under the binary-status
+# taxonomy).
 #
 # The two endpoints (/v1/chat/completions and /v1/messages) share the
 # cost-tracking pipeline downstream but enter through different
@@ -31,8 +33,8 @@ MOCK_CONTAINER="${MOCK_CONTAINER:-litellm-e2e-mock}"
 
 if ! docker exec "$MOCK_CONTAINER" python3 -c \
         "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" 2>/dev/null; then
-    echo "FAIL: $MOCK_CONTAINER not up. Start proxy with --with-mock."
-    exit 1
+    echo "SKIP: $MOCK_CONTAINER not up (run with --with-mock)"
+    exit 77
 fi
 
 USER_SENTINEL="case28-$(date +%s%N)"
@@ -71,7 +73,9 @@ SELECT
     COALESCE(status, ''),
     COALESCE(completion_tokens::text, '0'),
     COALESCE(metadata::jsonb->>'cancellation_indicator', ''),
-    COALESCE(metadata::jsonb->>'cancel_phase', '')
+    COALESCE(metadata::jsonb->>'cancel_phase', ''),
+    COALESCE(metadata::jsonb->>'delivery_status', ''),
+    COALESCE(metadata::jsonb->>'billing_status', '')
 FROM \"LiteLLM_SpendLogs\"
 WHERE end_user = '$USER_SENTINEL'
    OR metadata::jsonb->>'requester_metadata' LIKE '%$USER_SENTINEL%'
@@ -89,7 +93,9 @@ SELECT
     COALESCE(status, ''),
     COALESCE(completion_tokens::text, '0'),
     COALESCE(metadata::jsonb->>'cancellation_indicator', ''),
-    COALESCE(metadata::jsonb->>'cancel_phase', '')
+    COALESCE(metadata::jsonb->>'cancel_phase', ''),
+    COALESCE(metadata::jsonb->>'delivery_status', ''),
+    COALESCE(metadata::jsonb->>'billing_status', '')
 FROM \"LiteLLM_SpendLogs\"
 WHERE model_group = 'mock-anthropic' AND \"startTime\" > NOW() - INTERVAL '60 seconds'
 ORDER BY \"startTime\" DESC LIMIT 1;
@@ -101,16 +107,27 @@ if [ -z "$ROW" ]; then
     exit 1
 fi
 
-IFS='|' read -r STATUS TOKENS IND PHASE <<< "$ROW"
-echo "  row: status=$STATUS completion_tokens=$TOKENS ind=$IND phase=$PHASE"
+IFS='|' read -r STATUS TOKENS IND PHASE DEL BIL <<< "$ROW"
+echo "  row: status=$STATUS completion_tokens=$TOKENS ind=$IND phase=$PHASE delivery=$DEL billing=$BIL"
 
 OK=1
-if [ "$STATUS" != "success_partial" ]; then
-    echo "FAIL: expected status=success_partial, got '$STATUS' (catch missing in common_request_processing.py?)"
+# Binary-status taxonomy: cancel row carries status="success" + marker.
+# /v1/messages is streaming → streaming_partial phase → delivery=partial,
+# billing=partial.
+if [ "$STATUS" != "success" ]; then
+    echo "FAIL: expected status=success, got '$STATUS' (catch missing in common_request_processing.py?)"
     OK=0
 fi
 if [ "$IND" != "client_disconnect" ]; then
     echo "FAIL: expected cancellation_indicator=client_disconnect, got '$IND'"
+    OK=0
+fi
+if [ "$DEL" != "partial" ]; then
+    echo "FAIL: expected delivery_status=partial, got '$DEL'"
+    OK=0
+fi
+if [ "$BIL" != "partial" ]; then
+    echo "FAIL: expected billing_status=partial, got '$BIL'"
     OK=0
 fi
 

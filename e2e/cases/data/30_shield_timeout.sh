@@ -49,8 +49,10 @@ echo "[30] non-stream cancel + shield_timeout..."
 #   T+1   cancel_finalize starts shield + wait_for(upstream, timeout=2s)
 #   T+3   shield wait_for raises asyncio.TimeoutError
 #         → usage_source=shield_timeout, upstream_task.cancel()
-#         → fallback to failure hook → row classified success_partial
-#           via the CancelledError branch in async_post_call_failure_hook
+#         → fallback to failure hook → CancelledError branch in
+#           async_post_call_failure_hook keeps status="success" (cancel
+#           is not a system failure) and the derivation yields
+#           delivery=none, billing=partial
 set +e
 timeout 1 curl -sS -X POST "$PROXY_URL/v1/chat/completions" \
     -H "Authorization: Bearer $MASTER_KEY" \
@@ -79,7 +81,9 @@ SELECT
     COALESCE(metadata::jsonb->>'cancellation_indicator', ''),
     COALESCE(metadata::jsonb->>'cancel_phase', ''),
     COALESCE(metadata::jsonb->>'usage_source', ''),
-    COALESCE(metadata::jsonb->>'upstream_completed', '')
+    COALESCE(metadata::jsonb->>'upstream_completed', ''),
+    COALESCE(metadata::jsonb->>'delivery_status', ''),
+    COALESCE(metadata::jsonb->>'billing_status', '')
 FROM \"LiteLLM_SpendLogs\"
 WHERE end_user = '$USER_SENTINEL'
 ORDER BY \"startTime\" DESC LIMIT 1;
@@ -92,12 +96,16 @@ if [ -z "$ROW" ]; then
     exit 1
 fi
 
-IFS='|' read -r STATUS IND PHASE SRC UPCOMP <<< "$ROW"
-echo "  row: status=$STATUS ind=$IND phase=$PHASE src=$SRC up=$UPCOMP"
+IFS='|' read -r STATUS IND PHASE SRC UPCOMP DEL BIL <<< "$ROW"
+echo "  row: status=$STATUS ind=$IND phase=$PHASE src=$SRC up=$UPCOMP delivery=$DEL billing=$BIL"
 
 OK=1
-if [ "$STATUS" != "success_partial" ]; then
-    echo "FAIL: expected status=success_partial, got '$STATUS'"
+# Binary-status taxonomy: shield_timeout still carries status="success"
+# (cancel != system failure). delivery=none (non-stream, nothing reached
+# the client), billing=partial (we billed the prompt-only baseline because
+# shield timed out before upstream's real usage came back).
+if [ "$STATUS" != "success" ]; then
+    echo "FAIL: expected status=success, got '$STATUS'"
     OK=0
 fi
 if [ "$IND" != "client_disconnect" ]; then
@@ -109,6 +117,14 @@ if [ "$SRC" != "shield_timeout" ]; then
     echo "      (Shield budget = ${SHIELD_TIMEOUT}s; mock TTFT=8000ms — shield should have"
     echo "       given up before upstream returned. If src=upstream_completed_after_cancel,"
     echo "       the shield timeout knob isn't being honored.)"
+    OK=0
+fi
+if [ "$DEL" != "none" ]; then
+    echo "FAIL: expected delivery_status=none, got '$DEL'"
+    OK=0
+fi
+if [ "$BIL" != "partial" ]; then
+    echo "FAIL: expected billing_status=partial (shield_timeout → prompt-only baseline), got '$BIL'"
     OK=0
 fi
 

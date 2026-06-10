@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Case 27 — Non-stream cancel → disconnect watcher + success_partial.
+# Case 27 — Non-stream cancel → disconnect watcher + shield-and-wait
+#           → row with status="success", delivery=none, billing=full.
 #
 # Verifies the disconnect-detection logic added in Phase 2 to
 # common_request_processing.py:base_process_llm_request. Without
@@ -21,7 +22,8 @@
 #      (phase=during_upstream, upstream_completed=True,
 #      usage_source=upstream_completed_after_cancel).
 #   4. Normal success_handler chain runs and writes the SpendLogs row
-#      with status=success_partial and the real usage tokens.
+#      with status=success + cancellation_indicator marker + the real
+#      upstream usage tokens.
 #
 # Tier: mock-only. Uses mock-anthropic with X-Mock-TTFT-Ms to delay
 # the upstream response past the curl --max-time.
@@ -38,23 +40,24 @@ MOCK_CONTAINER="${MOCK_CONTAINER:-litellm-e2e-mock}"
 # Pre-flight
 if ! docker exec "$MOCK_CONTAINER" python3 -c \
         "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" 2>/dev/null; then
-    echo "FAIL: $MOCK_CONTAINER not up. Start proxy with --with-mock."
-    exit 1
+    echo "SKIP: $MOCK_CONTAINER not up (run with --with-mock)"
+    exit 77
 fi
 
 USER_SENTINEL="case27-$(date +%s%N)"
 
-# Send non-stream request with 3-second TTFT on the upstream mock.
-# Cut the client at 1 second so cancel arrives while LiteLLM is in
-# the middle of `await client.post(...)`. cancel_finalize should
-# shield the upstream call, wait for it to return (~3s), then write
-# the SpendLogs row from the real upstream response.
+# Send non-stream request with 1.5-second TTFT on the upstream mock.
+# Cut the client at 0.5 seconds so cancel arrives while LiteLLM is in
+# the middle of `await client.post(...)`. The proxy is started with
+# LITELLM_CANCEL_SHIELD_TIMEOUT_S=2 (see docker-compose.yml). Shield
+# should wait, mock returns at T+1.5s (inside the 2s budget), then
+# the SpendLogs row gets the real upstream usage (billing=full).
 echo "[27] non-stream cancel during upstream wait..."
 set +e
-timeout 1 curl -sS -X POST "$PROXY_URL/v1/chat/completions" \
+timeout 0.5 curl -sS -X POST "$PROXY_URL/v1/chat/completions" \
     -H "Authorization: Bearer $MASTER_KEY" \
     -H "Content-Type: application/json" \
-    -H "X-Mock-TTFT-Ms: 3000" \
+    -H "X-Mock-TTFT-Ms: 1500" \
     -H "X-Mock-Full-Chars: 800" \
     -d '{
       "model":"mock-anthropic",
@@ -79,7 +82,9 @@ SELECT
     COALESCE(metadata::jsonb->>'cancellation_indicator', ''),
     COALESCE(metadata::jsonb->>'cancel_phase', ''),
     COALESCE(metadata::jsonb->>'usage_source', ''),
-    COALESCE(metadata::jsonb->>'upstream_completed', '')
+    COALESCE(metadata::jsonb->>'upstream_completed', ''),
+    COALESCE(metadata::jsonb->>'delivery_status', ''),
+    COALESCE(metadata::jsonb->>'billing_status', '')
 FROM \"LiteLLM_SpendLogs\"
 WHERE end_user = '$USER_SENTINEL'
 ORDER BY \"startTime\" DESC LIMIT 1;
@@ -92,12 +97,16 @@ if [ -z "$ROW" ]; then
     exit 1
 fi
 
-IFS='|' read -r STATUS TOKENS IND PHASE SRC UPCOMP <<< "$ROW"
-echo "  row: status=$STATUS completion_tokens=$TOKENS ind=$IND phase=$PHASE src=$SRC up=$UPCOMP"
+IFS='|' read -r STATUS TOKENS IND PHASE SRC UPCOMP DEL BIL <<< "$ROW"
+echo "  row: status=$STATUS completion_tokens=$TOKENS ind=$IND phase=$PHASE src=$SRC up=$UPCOMP delivery=$DEL billing=$BIL"
 
 OK=1
-if [ "$STATUS" != "success_partial" ]; then
-    echo "FAIL: expected status=success_partial, got '$STATUS'"
+# Under the binary-status taxonomy the cancel row carries
+# status="success" and the cancellation_indicator marker. Shield-success
+# implies delivery_status="none" (nothing reached the client — non-stream)
+# and billing_status="full" (upstream returned real usage AFTER cancel).
+if [ "$STATUS" != "success" ]; then
+    echo "FAIL: expected status=success, got '$STATUS'"
     OK=0
 fi
 if [ "$IND" != "client_disconnect" ]; then
@@ -110,6 +119,15 @@ fi
 # response is being processed in pieces).
 if [ "$PHASE" != "during_upstream" ] && [ "$PHASE" != "streaming_partial" ]; then
     echo "FAIL: expected cancel_phase in (during_upstream, streaming_partial), got '$PHASE'"
+    OK=0
+fi
+if [ "$DEL" != "none" ]; then
+    echo "FAIL: expected delivery_status=none (non-stream, no chunks reached client), got '$DEL'"
+    OK=0
+fi
+if [ "$BIL" != "full" ]; then
+    echo "FAIL: expected billing_status=full (shield-success: upstream returned real usage), got '$BIL'"
+    echo "      Got usage_source='$SRC'; needs to be upstream_completed_after_cancel for billing=full."
     OK=0
 fi
 # upstream_completed_after_cancel is the success case for shield-wait;

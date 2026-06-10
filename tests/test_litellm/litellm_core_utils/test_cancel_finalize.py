@@ -240,7 +240,7 @@ class TestFinalizeStreamingCancel:
         )
 
         # 1. Cancel marker must be set on the logging object so the
-        #    cost calculator knows to apply success_partial billing.
+        #    cost calculator knows to apply the cancel-billing path.
         assert logging_obj.model_call_details["cancel_phase"] == "streaming_partial"
         assert (
             logging_obj.model_call_details["cancellation_indicator"]
@@ -248,7 +248,9 @@ class TestFinalizeStreamingCancel:
         )
 
         # 2. async_success_handler received the reassembled response
-        #    (not the failure handler — cancel routes to success_partial).
+        #    (not the failure handler — cancel routes through the
+        #    success callback chain; the cancel taxonomy is encoded in
+        #    metadata markers, not the top-level status).
         assert len(logging_obj.captured_success_calls) == 1
         assert len(logging_obj.captured_failure_calls) == 0
         captured = logging_obj.captured_success_calls[0]
@@ -315,7 +317,10 @@ class TestFinalizeStreamingCancel:
         meta = forwarded["litellm_params"]["metadata"]
         assert meta["cancellation_indicator"] == "client_disconnect"
         assert meta["cancel_phase"] == "streaming_partial"
-        assert meta["status"] == "success_partial"
+        # Under the binary-status taxonomy, enrich does NOT mutate
+        # status — the cancellation_indicator marker above is what
+        # identifies this row as a cancel for downstream derivation.
+        assert meta.get("status") != "success_partial"
         # original_exception is a CancelledError (well-typed)
         assert isinstance(
             captured_failure_calls[0]["original_exception"],

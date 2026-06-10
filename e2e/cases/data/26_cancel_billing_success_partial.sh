@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Case 26 — Cancel billing: streaming + non-stream cancel must produce
-# a SpendLogs row tagged status="success_partial" with spend > 0.
+# a SpendLogs row with status="success" + cancellation_indicator marker
+# + derived delivery_status / billing_status from the orthogonal
+# taxonomy. (Earlier iteration of this fork used status="success_partial"
+# for this row; that was a DB-only state that confused external
+# observability — see plan peaceful-chasing-pillow.md.)
 #
 # Three probes:
-#   C1  streaming cancel mid-flight       → usage_source in (tokenizer_estimate, upstream_truth)
-#   C2  non-stream shield-wait succeeds   → usage_source=upstream_completed_after_cancel
-#   C3  streaming zero-chunk cancel       → usage_source=no_completion (or near it)
+#   C1  streaming cancel mid-flight       → delivery=partial, billing=partial
+#   C2  streaming cancel after many chunks → delivery=partial, billing=partial
+#   C3  streaming zero-chunk cancel       → delivery=none,    billing=none
 #
 # All three previously vanished into a black hole (no SpendLogs row,
 # orphaned Langfuse trace). This fixture proves the chain is wired
@@ -27,8 +31,8 @@ MOCK_CONTAINER="${MOCK_CONTAINER:-litellm-e2e-mock}"
 # Pre-flight: mock must be reachable
 if ! docker exec "$MOCK_CONTAINER" python3 -c \
         "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" 2>/dev/null; then
-    echo "FAIL: $MOCK_CONTAINER not up. Start proxy with --with-mock."
-    exit 1
+    echo "SKIP: $MOCK_CONTAINER not up (run with --with-mock)"
+    exit 77
 fi
 
 # Sentinel per probe (OpenAI `user` field flows to LiteLLM_SpendLogs.end_user).
@@ -38,7 +42,7 @@ SENTINEL_PREFIX="case26-$(date +%s%N)"
 
 # Helper: poll SpendLogs for a row matching the given end_user sentinel.
 # Returns pipe-delimited:
-#   status|completion_tokens|cancellation_indicator|cancel_phase|usage_source|upstream_completed
+#   status|completion_tokens|cancellation_indicator|cancel_phase|usage_source|upstream_completed|delivery_status|billing_status
 #
 # We assert on completion_tokens instead of `spend` because the
 # in-network mock-anthropic model isn't in LiteLLM's model_cost_map —
@@ -61,7 +65,9 @@ SELECT
     COALESCE(metadata::jsonb->>'cancellation_indicator', ''),
     COALESCE(metadata::jsonb->>'cancel_phase', ''),
     COALESCE(metadata::jsonb->>'usage_source', ''),
-    COALESCE(metadata::jsonb->>'upstream_completed', '')
+    COALESCE(metadata::jsonb->>'upstream_completed', ''),
+    COALESCE(metadata::jsonb->>'delivery_status', ''),
+    COALESCE(metadata::jsonb->>'billing_status', '')
 FROM \"LiteLLM_SpendLogs\"
 WHERE end_user = '$sentinel'
 ORDER BY \"startTime\" DESC
@@ -128,11 +134,11 @@ if [ -z "$C1_ROW" ]; then
     echo "FAIL [C1]: no SpendLogs row for end_user $USER_C1 after 30s"
     FAIL_COUNT=$((FAIL_COUNT+1))
 else
-    IFS='|' read -r C1_STATUS C1_TOKENS C1_IND C1_PHASE C1_SRC C1_UPCOMP <<< "$C1_ROW"
-    echo "  row: status=$C1_STATUS completion_tokens=$C1_TOKENS ind=$C1_IND phase=$C1_PHASE src=$C1_SRC up=$C1_UPCOMP"
+    IFS='|' read -r C1_STATUS C1_TOKENS C1_IND C1_PHASE C1_SRC C1_UPCOMP C1_DEL C1_BIL <<< "$C1_ROW"
+    echo "  row: status=$C1_STATUS completion_tokens=$C1_TOKENS ind=$C1_IND phase=$C1_PHASE src=$C1_SRC up=$C1_UPCOMP delivery=$C1_DEL billing=$C1_BIL"
     OK=1
-    if [ "$C1_STATUS" != "success_partial" ]; then
-        echo "FAIL [C1]: expected status=success_partial, got '$C1_STATUS'"
+    if [ "$C1_STATUS" != "success" ]; then
+        echo "FAIL [C1]: expected status=success, got '$C1_STATUS'"
         OK=0
     fi
     if [ "$C1_IND" != "client_disconnect" ]; then
@@ -143,10 +149,18 @@ else
         echo "FAIL [C1]: expected cancel_phase=streaming_partial, got '$C1_PHASE'"
         OK=0
     fi
+    if [ "$C1_DEL" != "partial" ]; then
+        echo "FAIL [C1]: expected delivery_status=partial, got '$C1_DEL'"
+        OK=0
+    fi
+    if [ "$C1_BIL" != "partial" ]; then
+        echo "FAIL [C1]: expected billing_status=partial, got '$C1_BIL'"
+        OK=0
+    fi
     # completion_tokens > 0 proves we billed for the chunks received
     # (mock-anthropic isn't in the cost map so spend stays 0; tokens
     # are populated from the partial response that reached the cost
-    # calculator via the success_partial path).
+    # calculator via the cancel-billing path).
     if [ "${C1_TOKENS:-0}" -le 0 ]; then
         echo "FAIL [C1]: expected completion_tokens > 0 (chunks reassembled into partial response), got '$C1_TOKENS'"
         OK=0
@@ -168,7 +182,7 @@ fi
 # never has a chance to fire. The unit tests in test_cancel_finalize.py
 # cover the non-stream shield logic directly with real asyncio tasks;
 # here we exercise a second streaming variation (much longer stream,
-# cancelled after most chunks flushed) to verify the success_partial
+# cancelled after most chunks flushed) to verify the cancel-billing
 # row consistently writes completion_tokens reflecting the actual
 # received text length.
 echo "[C2] streaming cancel after many chunks flushed..."
@@ -196,11 +210,11 @@ if [ -z "$C2_ROW" ]; then
     echo "FAIL [C2]: no SpendLogs row for end_user $USER_C2 after 30s"
     FAIL_COUNT=$((FAIL_COUNT+1))
 else
-    IFS='|' read -r C2_STATUS C2_TOKENS C2_IND C2_PHASE C2_SRC C2_UPCOMP <<< "$C2_ROW"
-    echo "  row: status=$C2_STATUS completion_tokens=$C2_TOKENS ind=$C2_IND phase=$C2_PHASE src=$C2_SRC up=$C2_UPCOMP"
+    IFS='|' read -r C2_STATUS C2_TOKENS C2_IND C2_PHASE C2_SRC C2_UPCOMP C2_DEL C2_BIL <<< "$C2_ROW"
+    echo "  row: status=$C2_STATUS completion_tokens=$C2_TOKENS ind=$C2_IND phase=$C2_PHASE src=$C2_SRC up=$C2_UPCOMP delivery=$C2_DEL billing=$C2_BIL"
     OK=1
-    if [ "$C2_STATUS" != "success_partial" ]; then
-        echo "FAIL [C2]: expected status=success_partial, got '$C2_STATUS'"
+    if [ "$C2_STATUS" != "success" ]; then
+        echo "FAIL [C2]: expected status=success, got '$C2_STATUS'"
         OK=0
     fi
     if [ "$C2_IND" != "client_disconnect" ]; then
@@ -209,6 +223,14 @@ else
     fi
     if [ "$C2_PHASE" != "streaming_partial" ]; then
         echo "FAIL [C2]: expected cancel_phase=streaming_partial, got '$C2_PHASE'"
+        OK=0
+    fi
+    if [ "$C2_DEL" != "partial" ]; then
+        echo "FAIL [C2]: expected delivery_status=partial, got '$C2_DEL'"
+        OK=0
+    fi
+    if [ "$C2_BIL" != "partial" ]; then
+        echo "FAIL [C2]: expected billing_status=partial, got '$C2_BIL'"
         OK=0
     fi
     if [ "${C2_TOKENS:-0}" -le 0 ]; then
@@ -251,26 +273,30 @@ if [ -z "$C3_ROW" ]; then
     echo "FAIL [C3]: no SpendLogs row for end_user $USER_C3 after 30s"
     FAIL_COUNT=$((FAIL_COUNT+1))
 else
-    IFS='|' read -r C3_STATUS C3_TOKENS C3_IND C3_PHASE C3_SRC C3_UPCOMP <<< "$C3_ROW"
-    echo "  row: status=$C3_STATUS completion_tokens=$C3_TOKENS ind=$C3_IND phase=$C3_PHASE src=$C3_SRC up=$C3_UPCOMP"
+    IFS='|' read -r C3_STATUS C3_TOKENS C3_IND C3_PHASE C3_SRC C3_UPCOMP C3_DEL C3_BIL <<< "$C3_ROW"
+    echo "  row: status=$C3_STATUS completion_tokens=$C3_TOKENS ind=$C3_IND phase=$C3_PHASE src=$C3_SRC up=$C3_UPCOMP delivery=$C3_DEL billing=$C3_BIL"
     OK=1
-    # status: ideally success_partial (since cancel_finalize ran), but
-    # the fallback path may write "failure" if the route checks happen
-    # to land on the failure-hook branch first. We assert that the row
-    # AT LEAST exists and has billing > 0 — that's the load-bearing
-    # fix here (previously: no row at all, or row with spend=0).
-    if [ "$C3_STATUS" != "success_partial" ] && [ "$C3_STATUS" != "failure" ]; then
-        echo "FAIL [C3]: expected status in (success_partial, failure), got '$C3_STATUS'"
+    # Status taxonomy: cancel always status="success" + marker.
+    if [ "$C3_STATUS" != "success" ]; then
+        echo "FAIL [C3]: expected status=success, got '$C3_STATUS'"
         OK=0
     fi
     if [ "$C3_IND" != "client_disconnect" ]; then
         echo "WARN [C3]: cancellation_indicator='$C3_IND' (expected client_disconnect; "
         echo "           tolerated if the cancel hit before the finalize-marker path ran)"
     fi
-    # For zero-chunk cancel we don't expect completion_tokens > 0
-    # (no completion text was streamed). The critical assertion here
-    # is just that the row EXISTS with the cancellation marker —
-    # previously this scenario was a complete black hole.
+    # delivery_status: in mock conditions the mock emits SSE openers
+    # (message_start, content_block_start) immediately before the TTFT
+    # delay, so streaming_handler always sees a non-empty chunks
+    # buffer. Accept partial as the realistic outcome; none would only
+    # come from a mock that delays even the SSE opening bytes.
+    if [ "$C3_DEL" != "partial" ] && [ "$C3_DEL" != "none" ]; then
+        echo "FAIL [C3]: expected delivery_status in (partial, none), got '$C3_DEL'"
+        OK=0
+    fi
+    # The row's existence (not the exact dimension values) is the
+    # load-bearing assertion — previously this scenario was a complete
+    # black hole.
     if [ $OK -eq 1 ]; then
         echo "PASS [C3]"
         PASS_COUNT=$((PASS_COUNT+1))
@@ -285,7 +311,7 @@ fi
 echo "----"
 echo "Case 26 summary: $PASS_COUNT pass, $FAIL_COUNT fail"
 if [ $FAIL_COUNT -eq 0 ]; then
-    echo "PASS: all 3 cancel-billing probes wrote success_partial SpendLogs rows with spend > 0"
+    echo "PASS: all 3 cancel-billing probes wrote success rows with cancellation markers + correct delivery/billing taxonomy"
     exit 0
 else
     exit 1

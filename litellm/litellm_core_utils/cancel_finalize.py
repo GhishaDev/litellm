@@ -14,14 +14,18 @@ in LiteLLM let this BaseException-subclass slip through, so:
   the LiteLLM ledger.
 
 This module re-routes cancellation through the proxy's existing
-``async_success_handler`` path (with a new ``status="success_partial"``
-marker) so that:
+``async_success_handler`` path so that:
 
-* SpendLogs always records a row, even on cancellation.
+* SpendLogs always records a row, even on cancellation. The row has
+  ``status="success"`` (cancel != system failure) plus the cancellation
+  markers (cancellation_indicator, cancel_phase, usage_source, etc.)
+  that drive the derived ``delivery_status`` and ``billing_status``
+  taxonomy in the metadata JSON column.
 * Whatever was streamed (or, for non-stream, would have been streamed
   given the shield logic in cancel_billing.py) gets billed.
 * Failure-rate metrics are not polluted by client-initiated cancels.
-* Langfuse traces close cleanly with success-partial status.
+* Langfuse traces close cleanly via the normal success path; dashboards
+  distinguishing cancels filter on cancellation_indicator.
 
 This file is the catch-and-route plumbing. The cost computation for
 the partial response lives in cancel_billing.py (added separately —
@@ -31,8 +35,9 @@ Public API
 ----------
 ``mark_logging_obj_cancelled(logging_obj, phase, indicator)``
     Idempotently tags the LiteLLM Logging object with cancellation
-    metadata. The downstream cost calculator (PR #3) reads these markers
-    to drive the success_partial billing path.
+    metadata. The downstream cost calculator reads these markers to
+    drive the cancel-billing path (prompt-only / chunk-reassembly /
+    shield-and-wait depending on phase).
 
 ``finalize_streaming_cancel(...)``
     Called from the proxy's streaming generator catch block. Builds a
@@ -79,8 +84,9 @@ def mark_logging_obj_cancelled(
 ) -> None:
     """
     Tag a Logging object with cancellation metadata so the downstream
-    cost calculator and the SpendLogs row populator know to apply the
-    success_partial billing path.
+    cost calculator and the SpendLogs row populator can apply the
+    cancel-billing path (and so the derived delivery_status /
+    billing_status taxonomy can be computed from the markers).
 
     Idempotent — calling twice on the same object is safe (a defensive
     re-call in nested catch blocks will not corrupt the first marker).
@@ -164,16 +170,21 @@ async def finalize_streaming_cancel(
     bytes_delivered: Optional[int] = None,
 ) -> None:
     """
-    Dispatch a streaming-cancel through the normal success callback chain
-    with status="success_partial".
+    Dispatch a streaming-cancel through the normal success callback
+    chain. The SpendLogs row stays ``status="success"``; the
+    cancellation taxonomy is conveyed via the markers set on the
+    Logging instance (which get bridged into metadata by
+    ``enrich_request_metadata_with_cancel_markers`` and then turned into
+    delivery_status / billing_status by the derivation helper in
+    spend_tracking_utils).
 
     Called from the catch block of the proxy's streaming generator (and
     defensively from CustomStreamWrapper.__anext__). The reassembled
-    partial response is built via the same stream_chunk_builder path used
-    by end-of-stream success, so all the cost-calculation / Langfuse /
-    Prometheus hooks see a normal-looking response object — they just
-    see the ``cancellation_indicator`` marker on the Logging instance
-    and apply the partial-billing logic.
+    partial response is built via the same stream_chunk_builder path
+    used by end-of-stream success, so all the cost-calculation /
+    Langfuse / Prometheus hooks see a normal-looking response object —
+    they just see the ``cancellation_indicator`` marker on the Logging
+    instance and apply the partial-billing logic.
 
     Hardening notes:
 
@@ -203,6 +214,20 @@ async def finalize_streaming_cancel(
                 bytes_delivered=bytes_delivered,
             )
 
+            # mark_logging_obj_cancelled is idempotent on the marker —
+            # if streaming_handler's defensive catch ran first with
+            # bytes_delivered=0 (no chunks visible at the
+            # CustomStreamWrapper layer), the proxy-level chunk count
+            # we got here (from async_streaming_data_generator) is
+            # more accurate. Promote it directly when it's a strictly
+            # better signal.
+            if bytes_delivered is not None and bytes_delivered > 0:
+                _details = getattr(logging_obj, "model_call_details", None)
+                if isinstance(_details, dict):
+                    _existing = _details.get("bytes_delivered_to_client") or 0
+                    if bytes_delivered > _existing:
+                        _details["bytes_delivered_to_client"] = bytes_delivered
+
             # Bridge the cancel markers we just set on the Logging
             # object into request_data.litellm_params.metadata so the
             # SpendLogs row reflects the cancellation. The standard
@@ -228,6 +253,24 @@ async def finalize_streaming_cancel(
                     request_data=request_data,
                 )
                 return
+
+            # Update bytes_delivered_to_client now that we have evidence
+            # of how many chunks were flushed. mark_logging_obj_cancelled
+            # is idempotent on the indicator, so a direct mutation +
+            # re-bridge through enrich() is the way to refresh the
+            # downstream-visible value. We don't have the exact byte
+            # count (chunks are pre-serialisation), so use the chunk
+            # count as a proxy >0 signal — the derivation helper only
+            # cares whether bytes_delivered > 0.
+            details = getattr(logging_obj, "model_call_details", None)
+            if isinstance(details, dict) and (
+                details.get("bytes_delivered_to_client") in (None, 0)
+            ):
+                details["bytes_delivered_to_client"] = len(chunks)
+                enrich_request_metadata_with_cancel_markers(
+                    request_data=request_data,
+                    logging_obj=logging_obj,
+                )
 
             # Reassemble whatever we received. Stream_chunk_builder is
             # the same path the normal end-of-stream success handler

@@ -2013,7 +2013,10 @@ async def ui_view_spend_logs(  # noqa: PLR0915
             p += 2
             sql_conditions.append(or_clause)
 
-        # Status filter
+        # Status filter — binary success | failure (cancellations are a
+        # row-level annotation surfaced via the amber badge in the UI,
+        # not a top-level filter category). Kept in sync with the
+        # Prisma _build_status_filter_condition above.
         if status_filter is not None:
             if status_filter == "success":
                 sql_conditions.append("(status = 'success' OR status IS NULL)")
@@ -3480,21 +3483,23 @@ async def _build_ui_spend_logs_response(
 
 def _build_status_filter_condition(status_filter: Optional[str]) -> Dict[str, Any]:
     """
-    Helper function to build the status filter condition for database queries.
+    Build the SpendLogs status filter condition. Binary: success | failure.
 
-    Args:
-        status_filter (Optional[str]): The status to filter by. Can be "success" or "failure".
+    Cancellations are NOT a top-level filter category — they carry
+    status='success' with a metadata marker, and surface in the UI as
+    an amber badge inside the Success bucket. Users who actually need
+    to query cancelled rows can filter on
+    ``metadata::jsonb->>'cancellation_indicator'`` directly in SQL.
 
-    Returns:
-        Dict[str, Any]: A dictionary containing the status filter condition.
+    Returns an empty dict when status_filter is None or unrecognised.
     """
     if status_filter is None:
         return {}
-
     if status_filter == "success":
         return {"OR": [{"status": {"equals": "success"}}, {"status": None}]}
-    else:
-        return {"status": {"equals": status_filter}}
+    if status_filter == "failure":
+        return {"status": {"equals": "failure"}}
+    return {}
 
 
 def _is_admin_view_safe(user_api_key_dict: UserAPIKeyAuth) -> bool:

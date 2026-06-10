@@ -1298,90 +1298,91 @@ class ProxyBaseLLMRequestProcessing:
             *tasks
         )  # run the moderation check in parallel to the actual llm api call
 
-        # Detect client disconnect during the (potentially long) LLM call.
-        # Without this, non-stream cancellations are silent on the proxy
-        # side — the upstream provider continues processing, charges us
-        # for the compute, and we bill the user as a successful request.
+        # Detect client disconnect during the (potentially long) LLM
+        # call. NON-STREAM ONLY: streaming requests have their own
+        # CancelledError path in async_streaming_data_generator that
+        # gives us partial response usage. Running both layers would
+        # double-handle the cancel and the shield_timeout branch can
+        # fire BEFORE Anthropic's TTFT completes, eating into the
+        # streaming generator's correct path.
         #
-        # Strategy:
-        #
-        # 1. Spawn a polling task that watches `request.is_disconnected()`.
-        # 2. When the client disconnects, record the time and KEEP the
-        #    LLM call running — we want to bill its real upstream usage.
-        # 3. If the LLM call completes within the shield-timeout budget
-        #    after the disconnect, tag the row as success_partial with
-        #    usage_source=upstream_completed_after_cancel.
-        # 4. If the budget elapses with the LLM call still running, give
-        #    up and tag usage_source=shield_timeout (the row still
-        #    fires from the eventual LLM completion later, but the
-        #    HTTP request handler returns control sooner — important
-        #    so a hung upstream doesn't pin a worker indefinitely).
-        #
-        # Streaming requests' own CancelledError catch fires first; the
-        # watcher exits cleanly via watcher_task.cancel() in finally.
-        import os as _os
-
-        _shield_timeout_s = float(
-            _os.environ.get("LITELLM_CANCEL_SHIELD_TIMEOUT_S", "60.0")
-        )
+        # For non-stream, without this watcher cancellations are
+        # silent on the proxy side — the upstream provider continues
+        # processing, charges us for the compute, and we bill the
+        # user as a successful request.
+        is_streaming_request = bool(self.data.get("stream", False))
+        _shield_timed_out = False
         disconnect_flag = {"detected": False, "detected_at": 0.0}
 
-        async def _disconnect_watcher():
-            while not llm_responses.done():
-                try:
-                    await asyncio.sleep(1.0)
-                    if await request.is_disconnected():
-                        disconnect_flag["detected"] = True
-                        disconnect_flag["detected_at"] = time.time()
+        if is_streaming_request:
+            # Streaming path — let the streaming generator's
+            # CancelledError catch handle cancel detection.
+            responses = await llm_responses
+        else:
+            import os as _os
+
+            _shield_timeout_s = float(
+                _os.environ.get("LITELLM_CANCEL_SHIELD_TIMEOUT_S", "60.0")
+            )
+
+            async def _disconnect_watcher():
+                while not llm_responses.done():
+                    try:
+                        await asyncio.sleep(1.0)
+                        if await request.is_disconnected():
+                            disconnect_flag["detected"] = True
+                            disconnect_flag["detected_at"] = time.time()
+                            return
+                    except asyncio.CancelledError:
                         return
-                except asyncio.CancelledError:
-                    return
-                except Exception:
-                    # is_disconnected() can occasionally raise (e.g.
-                    # broken transport). Stop polling; the LLM call
-                    # will run to completion on its own.
-                    return
+                    except Exception:
+                        # is_disconnected() can occasionally raise
+                        # (e.g. broken transport). Stop polling; the
+                        # LLM call will run to completion on its own.
+                        return
 
-        _disconnect_watcher_task = asyncio.create_task(_disconnect_watcher())
-        _shield_timed_out = False
+            _disconnect_watcher_task = asyncio.create_task(_disconnect_watcher())
 
-        try:
-            # If the client disconnects, we keep awaiting up to
-            # _shield_timeout_s past the disconnect for the LLM call
-            # to finish. Done with a polling loop because asyncio.shield
-            # + wait_for would also cancel the watcher.
-            _poll_interval = 0.2
-            while not llm_responses.done():
-                try:
-                    responses = await asyncio.wait_for(
-                        asyncio.shield(llm_responses), timeout=_poll_interval
-                    )
-                    break
-                except asyncio.TimeoutError:
-                    if disconnect_flag["detected"]:
-                        elapsed = time.time() - disconnect_flag["detected_at"]
-                        if elapsed >= _shield_timeout_s:
-                            _shield_timed_out = True
-                            break
-            else:
-                responses = await llm_responses
-        finally:
-            _disconnect_watcher_task.cancel()
+            try:
+                # If the client disconnects, we keep awaiting up to
+                # _shield_timeout_s past the disconnect for the LLM
+                # call to finish. Polling loop because asyncio.shield
+                # + wait_for would also cancel the watcher.
+                _poll_interval = 0.2
+                while not llm_responses.done():
+                    try:
+                        responses = await asyncio.wait_for(
+                            asyncio.shield(llm_responses),
+                            timeout=_poll_interval,
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        if disconnect_flag["detected"]:
+                            elapsed = time.time() - disconnect_flag["detected_at"]
+                            if elapsed >= _shield_timeout_s:
+                                _shield_timed_out = True
+                                break
+                else:
+                    responses = await llm_responses
+            finally:
+                _disconnect_watcher_task.cancel()
 
-        # If we hit the shield timeout, build a synthetic empty response
-        # so the rest of the handler doesn't crash. The actual SpendLogs
-        # row will get the prompt-only billing via the cancel markers
-        # below.
-        if _shield_timed_out:
-            from litellm.types.utils import ModelResponse as _MR
+            # If we hit the shield timeout, build a synthetic empty
+            # response so the rest of the handler doesn't crash. The
+            # actual SpendLogs row will get the prompt-only billing
+            # via the cancel markers below.
+            if _shield_timed_out:
+                from litellm.types.utils import ModelResponse as _MR
 
-            _empty = _MR()
-            _empty.choices = []
-            responses = [None, _empty]
+                _empty = _MR()
+                _empty.choices = []
+                responses = [None, _empty]
 
         # If the client gave up during the upstream wait, tag the
-        # Logging instance so the SpendLogs row classifies as
-        # success_partial (real upstream usage + cancel markers).
+        # Logging instance so the SpendLogs row carries the cancel
+        # markers (real upstream usage + cancellation_indicator +
+        # derived delivery_status / billing_status). The row stays
+        # status="success" — cancel is not a system failure.
         if disconnect_flag["detected"]:
             from litellm.litellm_core_utils.cancel_billing import (
                 enrich_request_metadata_with_cancel_markers,
@@ -2233,6 +2234,13 @@ class ProxyBaseLLMRequestProcessing:
             and not cost_injection_enabled
         )
         debug_enabled = verbose_proxy_logger.isEnabledFor(logging.DEBUG)
+        # Track chunks actually yielded to the client. Passed to
+        # finalize_streaming_cancel on cancel so the derived
+        # delivery_status reflects whether ANY bytes reached the
+        # client — important for /v1/messages and other endpoints
+        # whose response object is a bare async iterator (no
+        # `.chunks` attribute for _get_accumulated_chunks).
+        chunks_yielded = 0
         try:
             str_so_far = ""
             async for (
@@ -2278,6 +2286,7 @@ class ProxyBaseLLMRequestProcessing:
 
                 if fast_path:
                     yield serialize_chunk(chunk)
+                    chunks_yielded += 1
                     continue
 
                 chunk = await proxy_logging_obj.async_post_call_streaming_hook(
@@ -2310,6 +2319,7 @@ class ProxyBaseLLMRequestProcessing:
                 # fast_path short-circuit (single source of truth — see comment
                 # there for the SSE byte-rewrite contract).
                 yield serialize_chunk(chunk)
+                chunks_yielded += 1
         except asyncio.CancelledError:
             # Client cancelled this Anthropic /messages or Google
             # /generateContent stream. asyncio.CancelledError is a
@@ -2319,7 +2329,7 @@ class ProxyBaseLLMRequestProcessing:
             # upstream provider continues billing us for compute.
             #
             # Route through cancel_finalize so the partial response gets
-            # billed via the success_partial path. Re-raise to preserve
+            # billed via the cancel-billing path. Re-raise to preserve
             # asyncio's cancellation contract.
             from litellm.litellm_core_utils.cancel_finalize import (
                 finalize_streaming_cancel,
@@ -2332,8 +2342,9 @@ class ProxyBaseLLMRequestProcessing:
             # attribute — fall back to the Logging instance the proxy
             # stashed on request_data during pre-call setup. Without
             # this fallback the cancel markers never get set on the
-            # Logging object and the SpendLogs row ends up classified
-            # as plain "success" rather than "success_partial".
+            # Logging object and the SpendLogs row looks like a plain
+            # success with no cancellation_indicator (so the UI can't
+            # render the Cancel badge and dashboards can't filter).
             logging_obj = (
                 getattr(response, "logging_obj", None) if response is not None else None
             )
@@ -2344,6 +2355,7 @@ class ProxyBaseLLMRequestProcessing:
                 logging_obj=logging_obj,
                 user_api_key_dict=user_api_key_dict,
                 request_data=request_data,
+                bytes_delivered=chunks_yielded,
             )
             raise
         except Exception as e:

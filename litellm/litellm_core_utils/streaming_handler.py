@@ -2250,16 +2250,32 @@ class CustomStreamWrapper:
             # stream wrapper directly (rather than being caught by the
             # proxy generator in proxy_server.async_data_generator),
             # mark the Logging object so the cost calculator knows to
-            # apply success_partial billing. We don't dispatch the
-            # success_handler here — that's the proxy generator's job;
-            # otherwise we'd risk firing it twice. Just leave the
-            # marker so whoever finalizes gets the right billing path,
-            # then re-raise to preserve cancellation semantics.
+            # apply the cancel-billing path (prompt + chunk reassembly).
+            # We don't dispatch the success_handler here — that's the
+            # proxy generator's job; otherwise we'd risk firing it
+            # twice. Just leave the marker so whoever finalizes gets
+            # the right billing path, then re-raise to preserve
+            # cancellation semantics.
             from litellm.litellm_core_utils.cancel_finalize import (
                 mark_logging_obj_cancelled,
             )
 
-            mark_logging_obj_cancelled(self.logging_obj, phase="streaming_partial")
+            # Pass the accumulated chunk count as the bytes_delivered
+            # signal. This is the path that catches cancels on endpoints
+            # whose response object is a bare async iterator (e.g.
+            # /v1/messages, /v1beta/...:streamGenerateContent) — for
+            # those, finalize_streaming_cancel's _get_accumulated_chunks
+            # can't find the chunks list (wrapped elsewhere), so the
+            # downstream derivation defaults to delivery=none. Set
+            # bytes_delivered here so derivation correctly classifies
+            # the row as partial-delivery when chunks did flow.
+            chunks = getattr(self, "chunks", None)
+            chunk_count = len(chunks) if isinstance(chunks, list) else 0
+            mark_logging_obj_cancelled(
+                self.logging_obj,
+                phase="streaming_partial",
+                bytes_delivered=chunk_count,
+            )
             raise
         except Exception as e:
             traceback_exception = traceback.format_exc()

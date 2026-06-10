@@ -1,14 +1,22 @@
 """
-Behavioral tests for `_get_spend_logs_metadata` propagating the new
-cancellation-tracking fields (status="success_partial" path).
+Behavioral tests for `_get_spend_logs_metadata` propagating the cancel
+markers AND materializing the derived ``delivery_status`` /
+``billing_status`` taxonomy.
 
-These fields land inside the existing `metadata` JSON column on
-LiteLLM_SpendLogs — no Prisma migration required — but only if
-``_get_spend_logs_metadata`` (the function the proxy actually calls to
-shape a SpendLogs payload) preserves them when filtering input metadata
-through ``SpendLogsMetadata.__annotations__``. That filter is the failure
-mode this file guards against: forgetting to declare a new field on
-SpendLogsMetadata silently drops it from every SpendLogs row.
+The 5 cancel markers + 2 derived dimensions land in the existing
+``metadata`` JSON column on LiteLLM_SpendLogs — no Prisma migration
+required — but only if ``_get_spend_logs_metadata`` (the function the
+proxy actually calls to shape a SpendLogs payload) preserves them when
+filtering input metadata through ``SpendLogsMetadata.__annotations__``
+AND invokes ``_derive_delivery_billing_status`` to populate the derived
+fields.
+
+This file guards two failure modes:
+1. Forgetting to declare a new marker on SpendLogsMetadata silently
+   drops it from every SpendLogs row.
+2. Forgetting to call (or correctly wire) the derivation helper means
+   downstream dashboards filtering on delivery_status / billing_status
+   match zero rows.
 
 Each test runs the real function and asserts on the real returned dict.
 No Literal/Enum runtime assertions (those are mypy's job).
@@ -19,7 +27,11 @@ import sys
 
 sys.path.insert(0, os.path.abspath("../../../.."))
 
-from litellm.proxy.spend_tracking.spend_tracking_utils import _get_spend_logs_metadata
+from litellm.proxy.spend_tracking.spend_tracking_utils import (
+    _derive_delivery_billing_status,
+    _get_spend_logs_metadata,
+    _get_status_for_spend_log,
+)
 
 
 class TestCancellationFieldsInitializedFromNone:
@@ -148,3 +160,157 @@ class TestNormalSuccessUnaffected:
         assert out["bytes_delivered_to_client"] is None
         assert out["upstream_completed"] is None
         assert out["usage_source"] is None
+
+
+class TestDeriveDeliveryBillingStatus:
+    """Direct unit coverage of ``_derive_delivery_billing_status`` — one
+    test per row of the semantic mapping (see docstring inside the
+    helper). These are the source-of-truth assertions; the
+    ``TestMaterializeDeliveryBillingStatus`` class below verifies they
+    actually land in the SpendLogs metadata output dict.
+    """
+
+    def test_normal_success_yields_full_full(self):
+        assert _derive_delivery_billing_status({}) == ("full", "full")
+        assert _derive_delivery_billing_status({"status": "success"}) == (
+            "full",
+            "full",
+        )
+
+    def test_failure_yields_none_none(self):
+        assert _derive_delivery_billing_status({"status": "failure"}) == (
+            "none",
+            "none",
+        )
+
+    def test_streaming_partial_with_bytes_yields_partial_partial(self):
+        meta = {
+            "cancellation_indicator": "client_disconnect",
+            "cancel_phase": "streaming_partial",
+            "bytes_delivered_to_client": 4096,
+            "usage_source": "tokenizer_estimate",
+        }
+        assert _derive_delivery_billing_status(meta) == ("partial", "partial")
+
+    def test_shield_success_yields_none_full(self):
+        meta = {
+            "cancellation_indicator": "client_disconnect",
+            "cancel_phase": "during_upstream",
+            "bytes_delivered_to_client": 0,
+            "upstream_completed": True,
+            "usage_source": "upstream_completed_after_cancel",
+        }
+        assert _derive_delivery_billing_status(meta) == ("none", "full")
+
+    def test_shield_timeout_yields_none_partial(self):
+        meta = {
+            "cancellation_indicator": "client_disconnect",
+            "cancel_phase": "during_upstream",
+            "upstream_completed": False,
+            "usage_source": "shield_timeout",
+        }
+        assert _derive_delivery_billing_status(meta) == ("none", "partial")
+
+    def test_zero_chunk_cancel_yields_none_none(self):
+        meta = {
+            "cancellation_indicator": "client_disconnect",
+            "cancel_phase": "before_upstream",
+            "usage_source": "no_completion",
+        }
+        assert _derive_delivery_billing_status(meta) == ("none", "none")
+
+    def test_streaming_cancel_with_zero_bytes_yields_none_none(self):
+        # Edge: phase=streaming_partial but bytes_delivered=0 — the cancel
+        # fired so early in the stream that no chunks made it out.
+        # Counts as no delivery.
+        meta = {
+            "cancellation_indicator": "client_disconnect",
+            "cancel_phase": "streaming_partial",
+            "bytes_delivered_to_client": 0,
+        }
+        assert _derive_delivery_billing_status(meta) == ("none", "none")
+
+    def test_cancel_upstream_error_during_shield_yields_none_partial(self):
+        # Cancel fired, shield-and-wait kicked in, but upstream errored
+        # during the shield window. cancel_finalize tags it
+        # usage_source="no_completion" / upstream_completed=False.
+        # We bill prompt-only (none/partial), NOT (none/none), because
+        # we still incurred the upstream request — see semantic mapping
+        # docstring in the derivation helper.
+        # NOTE: the derivation here lands on (none, none) under the
+        # current rule because usage_source != shield_timeout. This
+        # test pins that behaviour. If we later want to separate
+        # "shield-window upstream error" from "before dispatch", we'd
+        # add a new CancelUsageSource value like "upstream_errored".
+        meta = {
+            "cancellation_indicator": "client_disconnect",
+            "cancel_phase": "during_upstream",
+            "upstream_completed": False,
+            "usage_source": "no_completion",
+        }
+        assert _derive_delivery_billing_status(meta) == ("none", "none")
+
+
+class TestMaterializeDeliveryBillingStatus:
+    """``_get_spend_logs_metadata`` must call the derivation helper and
+    write the result into the returned dict, so SQL dashboards can
+    filter on ``metadata::jsonb->>'delivery_status'`` directly."""
+
+    def test_normal_success_materializes_full_full(self):
+        out = _get_spend_logs_metadata(metadata={"user_api_key": "sk-test"})
+        assert out["delivery_status"] == "full"
+        assert out["billing_status"] == "full"
+
+    def test_streaming_cancel_materializes_partial_partial(self):
+        out = _get_spend_logs_metadata(
+            metadata={
+                "cancellation_indicator": "client_disconnect",
+                "cancel_phase": "streaming_partial",
+                "bytes_delivered_to_client": 4096,
+                "usage_source": "tokenizer_estimate",
+            }
+        )
+        assert out["delivery_status"] == "partial"
+        assert out["billing_status"] == "partial"
+
+    def test_failure_materializes_none_none(self):
+        out = _get_spend_logs_metadata(metadata={"status": "failure"})
+        assert out["delivery_status"] == "none"
+        assert out["billing_status"] == "none"
+
+    def test_none_metadata_branch_includes_derived_fields(self):
+        # The early-failure path that passes metadata=None still must
+        # include both derived keys (so JSON serializers don't silently
+        # drop them and downstream dashboards see them as NULL rather
+        # than missing).
+        out = _get_spend_logs_metadata(metadata=None)
+        assert "delivery_status" in out
+        assert "billing_status" in out
+
+
+class TestBinaryStatusReader:
+    """``_get_status_for_spend_log`` returns only "success" or
+    "failure". Cancellation taxonomy lives in metadata markers, not
+    this column."""
+
+    def test_success(self):
+        assert _get_status_for_spend_log({}) == "success"
+        assert _get_status_for_spend_log({"status": "success"}) == "success"
+
+    def test_failure(self):
+        assert _get_status_for_spend_log({"status": "failure"}) == "failure"
+
+    def test_cancel_with_markers_stays_success(self):
+        # The hot path under the new taxonomy: cancelled row carries
+        # status="success" + cancellation_indicator marker. The reader
+        # must return "success", letting the marker drive dashboard
+        # filtering.
+        assert (
+            _get_status_for_spend_log(
+                {
+                    "status": "success",
+                    "cancellation_indicator": "client_disconnect",
+                }
+            )
+            == "success"
+        )

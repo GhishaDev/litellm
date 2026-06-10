@@ -173,16 +173,42 @@ export const createColumns = (sortProps?: LogsSortProps): ColumnDef<LogEntry>[] 
     header: "Status",
     accessorKey: "metadata.status",
     cell: (info: any) => {
-      const status = info.getValue() || "Success";
-      const isSuccess = status.toLowerCase() !== "failure";
+      // Status taxonomy:
+      //   - "failure"  → red badge ("Failure {errCode}")
+      //   - cancelled  → amber badge ("Cancel 499"). A row is cancelled
+      //                  when metadata.cancellation_indicator is set;
+      //                  cancels carry status="success" — the marker is
+      //                  the source of truth.
+      //   - otherwise  → green "Success" badge
+      // Default "success" so historic rows that pre-date the
+      // metadata.status field continue rendering green.
+      const raw = String(info.getValue() || "success").toLowerCase();
+      const meta = info.row.original?.metadata || {};
+      const errInfo = meta?.error_information || {};
+      const errCode = errInfo?.error_code;
+      const cancelInd = meta?.cancellation_indicator;
+
+      const isFailure = raw === "failure";
+      const isCancel = !isFailure && !!cancelInd;
+
+      let label: string;
+      let className: string;
+      if (isFailure) {
+        label = errCode && errCode !== "None" ? `Failure ${errCode}` : "Failure";
+        className = "bg-red-100 text-red-800";
+      } else if (isCancel) {
+        label = errCode && errCode !== "None" ? `Cancel ${errCode}` : "Cancel";
+        className = "bg-amber-100 text-amber-800";
+      } else {
+        label = "Success";
+        className = "bg-green-100 text-green-800";
+      }
 
       return (
         <span
-          className={`px-2 py-1 rounded-md text-xs font-medium inline-block text-center w-16 ${
-            isSuccess ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
-          }`}
+          className={`px-2 py-1 rounded-md text-xs font-medium inline-block text-center w-20 ${className}`}
         >
-          {isSuccess ? "Success" : "Failure"}
+          {label}
         </span>
       );
     },

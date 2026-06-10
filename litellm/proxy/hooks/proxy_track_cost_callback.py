@@ -80,10 +80,13 @@ class _ProxyDBLogger(CustomLogger):
         # Detect whether this failure path is actually serving a client
         # cancellation (CancelledError propagated through
         # cancel_finalize._fallback_to_failure_hook). When it is, the
-        # SpendLogs row should be classified as success_partial — the
-        # upstream consumed billable compute even though no chunks
-        # reached the client — and any cancel markers already set on
-        # request_data.litellm_params.metadata must NOT be clobbered.
+        # SpendLogs row must stay ``status="success"`` — cancellation is
+        # not a system failure; the proxy did its job, the client gave up.
+        # The cancel taxonomy (was-it-cancelled / did-we-deliver /
+        # did-we-bill) lives in metadata markers + the derived
+        # delivery_status / billing_status fields. Cancel markers already
+        # set on request_data.litellm_params.metadata by cancel_finalize
+        # must NOT be clobbered.
         _is_cancel = isinstance(original_exception, asyncio.CancelledError)
 
         _metadata = dict(
@@ -92,7 +95,7 @@ class _ProxyDBLogger(CustomLogger):
             )
         )
         _metadata["user_api_key"] = user_api_key_dict.api_key
-        _metadata["status"] = "success_partial" if _is_cancel else "failure"
+        _metadata["status"] = "success" if _is_cancel else "failure"
         _error_information = StandardLoggingPayloadSetup.get_error_information(
             original_exception=original_exception,
             traceback_str=traceback_str,
@@ -131,9 +134,11 @@ class _ProxyDBLogger(CustomLogger):
             existing_metadata["tags"] = existing_litellm_metadata.get("tags")
 
         # Preserve cancellation markers written by cancel_finalize before
-        # the failure hook ran. Without this, the success_partial taxonomy
-        # gets stripped on every cancelled request that took the
-        # fallback-to-failure-hook path (zero-chunk cancels in particular).
+        # the failure hook ran. Without this, the cancel taxonomy gets
+        # stripped on every cancelled request that took the
+        # fallback-to-failure-hook path (zero-chunk cancels in particular)
+        # — and the downstream _derive_delivery_billing_status helper
+        # would not be able to tell a real failure from a cancellation.
         for _cancel_field in (
             "cancellation_indicator",
             "cancel_phase",

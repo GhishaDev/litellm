@@ -7,7 +7,9 @@
 # covers single-request cases; this case fires N parallel requests
 # and cancels all of them mid-stream, then asserts:
 #   - all N SpendLogs rows exist (no black hole under contention)
-#   - each row carries the success_partial taxonomy
+#   - each row carries the cancellation_indicator marker (binary-
+#     status taxonomy: rows are status="success" + marker, not the
+#     legacy status="success_partial")
 #   - the proxy process didn't OOM or leak asyncio tasks (we
 #     spot-check by looking at request-handler latency on a control
 #     request after the burst)
@@ -26,8 +28,8 @@ MOCK_CONTAINER="${MOCK_CONTAINER:-litellm-e2e-mock}"
 
 if ! docker exec "$MOCK_CONTAINER" python3 -c \
         "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" 2>/dev/null; then
-    echo "FAIL: $MOCK_CONTAINER not up. Start proxy with --with-mock."
-    exit 1
+    echo "SKIP: $MOCK_CONTAINER not up (run with --with-mock)"
+    exit 77
 fi
 
 N=10
@@ -73,7 +75,9 @@ for i in $(seq 1 45); do
     ROW_COUNT=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tA -c "
 SELECT count(*)
 FROM \"LiteLLM_SpendLogs\"
-WHERE end_user LIKE '${RUN_ID}-%' AND status='success_partial';
+WHERE end_user LIKE '${RUN_ID}-%'
+  AND status='success'
+  AND metadata::jsonb->>'cancellation_indicator' = 'client_disconnect';
 " 2>/dev/null | head -1)
     if [ "${ROW_COUNT:-0}" -ge "$EXPECTED" ]; then
         echo "  $ROW_COUNT/$EXPECTED rows after ${i}s"
@@ -83,7 +87,7 @@ done
 
 OK=1
 if [ "${ROW_COUNT:-0}" -lt "$EXPECTED" ]; then
-    echo "FAIL: expected $EXPECTED success_partial rows, got ${ROW_COUNT:-0}"
+    echo "FAIL: expected $EXPECTED cancelled rows (status='success' + cancellation_indicator), got ${ROW_COUNT:-0}"
     OK=0
 fi
 
@@ -119,7 +123,7 @@ if [ "${SAMPLED_MARKERS:-0}" -lt "$EXPECTED" ]; then
 fi
 
 if [ $OK -eq 1 ]; then
-    echo "PASS: $N concurrent cancels → $EXPECTED success_partial rows + healthy proxy"
+    echo "PASS: $N concurrent cancels → $EXPECTED cancelled rows (status=success + marker) + healthy proxy"
     exit 0
 else
     exit 1

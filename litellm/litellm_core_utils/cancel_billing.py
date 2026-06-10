@@ -7,8 +7,11 @@ Companion to ``cancel_finalize.py``:
   object, and dispatches the partial response through
   ``async_success_handler``.
 * This module computes the dollar cost for the partial work — the
-  number that ends up in ``LiteLLM_SpendLogs.spend`` for the
-  ``status="success_partial"`` row.
+  number that ends up in ``LiteLLM_SpendLogs.spend`` for the cancelled
+  row. The row stays ``status="success"`` (cancellation is not a system
+  failure); the cancel taxonomy lives in metadata: ``cancellation_indicator``,
+  ``cancel_phase``, ``usage_source``, plus derived ``delivery_status`` /
+  ``billing_status``.
 
 Billing strategy (per 2026-06-08 design decision):
 
@@ -178,5 +181,32 @@ def enrich_request_metadata_with_cancel_markers(
             if field in details:
                 target_metadata[field] = details[field]
 
-        # Also override status so the SpendLogs row gets success_partial.
-        target_metadata["status"] = "success_partial"
+        # NOTE: we deliberately do NOT touch `metadata["status"]` here.
+        # Cancellation is identified by the presence of
+        # cancellation_indicator above; the top-level status column stays
+        # "success" (cancel != system failure). The orthogonal taxonomy
+        # (delivery_status / billing_status) is derived downstream in
+        # spend_tracking_utils._derive_delivery_billing_status from these
+        # very markers — single source of truth.
+
+        # Populate error_information.error_code="499" so the UI
+        # (which renders metadata.error_information.error_code as the
+        # HTTP status label) can distinguish cancelled requests from
+        # regular successes. This is an independent UI hint channel —
+        # the SQL/status surface uses the cancel markers above, the UI
+        # badge uses error_code, and they happen to converge on the
+        # same row. The success_handler path doesn't populate
+        # error_information on its own — without this block, cancelled
+        # rows look identical to plain successes in the dashboard.
+        existing_err_info = target_metadata.get("error_information") or {}
+        if not isinstance(existing_err_info, dict):
+            existing_err_info = {}
+        existing_err_info.setdefault("error_code", "499")
+        existing_err_info.setdefault("error_class", "CancelledError")
+        existing_err_info.setdefault("error_message", "Client disconnected the request")
+        # llm_provider and traceback aren't relevant for cancels;
+        # leave them empty so the UI doesn't render a misleading
+        # provider attribution or stack trace.
+        existing_err_info.setdefault("llm_provider", "")
+        existing_err_info.setdefault("traceback", "")
+        target_metadata["error_information"] = existing_err_info

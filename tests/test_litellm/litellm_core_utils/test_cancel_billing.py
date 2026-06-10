@@ -148,8 +148,11 @@ class TestEnrichRequestMetadataWithCancelMarkers:
         assert meta["bytes_delivered_to_client"] == 4096
         assert meta["upstream_completed"] is False
         assert meta["usage_source"] == "tokenizer_estimate"
-        # status overridden to success_partial
-        assert meta["status"] == "success_partial"
+        # The enrich helper no longer touches top-level status —
+        # cancellation is identified by cancellation_indicator above,
+        # and the derived delivery_status / billing_status are computed
+        # downstream in spend_tracking_utils._derive_delivery_billing_status.
+        assert "status" not in meta or meta.get("status") != "success_partial"
         # Pre-existing fields preserved
         assert meta["existing"] == "value"
 
@@ -166,7 +169,8 @@ class TestEnrichRequestMetadataWithCancelMarkers:
         meta = request_data["litellm_params"]["metadata"]
         assert meta["cancellation_indicator"] == "client_disconnect"
         assert meta["cancel_phase"] == "before_upstream"
-        assert meta["status"] == "success_partial"
+        # status is no longer mutated by the enrich helper.
+        assert meta.get("status") != "success_partial"
 
     def test_none_logging_obj_no_op(self):
         request_data = {"litellm_params": {"metadata": {}}}
@@ -194,9 +198,19 @@ class TestEnrichRequestMetadataWithCancelMarkers:
         assert "upstream_completed" not in meta
         assert "usage_source" not in meta
 
-    def test_overwrites_stale_status(self):
-        """If something else previously set status='success' or 'failure',
-        the cancel path must overwrite to 'success_partial'."""
+    def test_does_not_overwrite_status_field(self):
+        """The enrich helper must NOT mutate top-level status.
+
+        Under the binary-status taxonomy, cancellation is identified by
+        the presence of ``cancellation_indicator``; the top-level
+        ``status`` column stays ``"success"`` (cancel != system
+        failure). Verify we preserve any prior status the caller set
+        and never write the legacy ``"success_partial"`` sentinel.
+
+        Inverted from the original ``test_overwrites_stale_status``
+        which encoded the now-superseded "cancel overrides status to
+        success_partial" rule.
+        """
         for prior_status in ("success", "failure", None):
             request_data = {
                 "litellm_params": {
@@ -208,7 +222,13 @@ class TestEnrichRequestMetadataWithCancelMarkers:
                 cancel_phase="streaming_partial",
             )
             enrich_request_metadata_with_cancel_markers(request_data, logging_obj)
-            assert (
-                request_data["litellm_params"]["metadata"]["status"]
-                == "success_partial"
-            )
+            meta = request_data["litellm_params"]["metadata"]
+            # Cancellation marker landed
+            assert meta["cancellation_indicator"] == "client_disconnect"
+            # Status was either left alone or never set
+            if prior_status is None:
+                assert "status" not in meta
+            else:
+                assert meta["status"] == prior_status
+            # And the legacy success_partial sentinel is never written
+            assert meta.get("status") != "success_partial"
