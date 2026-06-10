@@ -1,6 +1,7 @@
 # What is this?
 ## Common Utility file for Logging handler
 # Logging function -> log the exact model details + what's being sent | Non-Blocking
+import asyncio
 import copy
 import datetime
 import json
@@ -2872,6 +2873,43 @@ class Logging(LiteLLMLoggingBaseClass):
         self.model_call_details["end_time"] = end_time
         self.model_call_details.setdefault("original_response", None)
         self.model_call_details["response_cost"] = 0
+
+        # Cancel-billing parity: when the failure is a client cancellation
+        # (asyncio.CancelledError propagated through the streaming /
+        # non-stream cancel-finalize paths), the upstream provider still
+        # received the prompt — we owe ourselves the prompt-only cost.
+        # Without this, every callback that reads response_cost off the
+        # StandardLoggingPayload (Prometheus litellm_spend_metric,
+        # Langfuse generation cost, Custom Callback API event body, OTel
+        # spans, etc.) silently under-counts cancel revenue. The DB row
+        # is independently correct because
+        # proxy_track_cost_callback.async_post_call_failure_hook runs
+        # compute_prompt_only_cost separately before writing — this
+        # change brings the SLP-side metrics in line with what the DB
+        # already records.
+        if isinstance(exception, asyncio.CancelledError):
+            try:
+                from litellm.litellm_core_utils.cancel_billing import (
+                    compute_prompt_only_cost,
+                )
+
+                _cancel_cost = compute_prompt_only_cost(
+                    messages=self.model_call_details.get("messages"),
+                    model=self.model_call_details.get("model"),
+                    custom_llm_provider=self.model_call_details.get(
+                        "custom_llm_provider"
+                    ),
+                )
+                if _cancel_cost and _cancel_cost > 0:
+                    self.model_call_details["response_cost"] = _cancel_cost
+            except Exception as _cost_exc:
+                # Best-effort — fall back to 0 if the cost calc errors out
+                # (unknown model, tokenizer failure). The failure-hook
+                # row still gets written by the DB writer downstream.
+                verbose_logger.debug(
+                    "cancel-cost pre-population failed in failure_handler: %s",
+                    _cost_exc,
+                )
 
         if hasattr(exception, "headers") and isinstance(exception.headers, dict):
             self.model_call_details.setdefault("litellm_params", {})
