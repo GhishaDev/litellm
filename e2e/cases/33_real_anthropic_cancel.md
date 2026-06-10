@@ -1,8 +1,8 @@
-# Case 33 — Real Anthropic streaming cancel → success_partial
+# Case 33 — Real Anthropic streaming cancel → partial-delivery SpendLogs row
 
 ## Goal
 
-End-to-end verification of the Phase 1 + Phase 2 cancel-billing chain
+End-to-end verification of the Phase 1/2/3 cancel-billing chain
 against the *real* Anthropic API, not the in-network mock. Mock-based
 cases 26-32 prove the plumbing wires together correctly; case 33
 proves it survives contact with genuine Anthropic streaming protocol
@@ -40,14 +40,16 @@ reproduce.
 3. Poll `LiteLLM_SpendLogs` for the row keyed by the per-run sentinel
    in the OpenAI `user` field (lands in the `end_user` column).
 4. Assert:
-   - `status = 'success_partial'` (Phase 1/2 taxonomy applied)
+   - `status = 'success'` (Phase 3 taxonomy: cancel is not a system failure)
    - `metadata.cancellation_indicator = 'client_disconnect'`
    - `metadata.cancel_phase = 'streaming_partial'`
+   - `metadata.delivery_status = 'partial'` (derived — chunks reached client)
+   - `metadata.billing_status = 'partial'` (derived — partial response was priced)
    - `completion_tokens > 1` — proves PR #1's cursor reset triggered
      against the real Anthropic stream and the partial response was
      reassembled with a real-looking token count, not the cursor=1
      placeholder
-   - `prompt_tokens > 100` — Anthropic's `message_start.input_tokens`
+   - `prompt_tokens > 0` — Anthropic's `message_start.input_tokens`
      reached the row, not the local tokenizer fallback
    - `spend > 0` — the cost map lookup found
      `anthropic/claude-sonnet-*` and the cost callback ran on the
@@ -57,11 +59,14 @@ reproduce.
 
 | Failure mode | Likely cause |
 |---|---|
-| `status` is `success` not `success_partial` | Cancel markers not propagating — recheck `enrich_request_metadata_with_cancel_markers` for new endpoint variants |
+| `status` is `failure` not `success` | Cancel was misclassified as failure — recheck `proxy_track_cost_callback._is_cancel` detection of CancelledError |
+| `cancellation_indicator` empty | Cancel markers not propagating — recheck `enrich_request_metadata_with_cancel_markers` for new endpoint variants |
+| `delivery_status` is `none` despite bytes streamed | `bytes_delivered_to_client` not populated — check `async_streaming_data_generator`'s `chunks_yielded` counter and `mark_logging_obj_cancelled` call sites |
+| `billing_status` is `none` despite completion_tokens > 0 | Derivation rule mismatched — check `_derive_delivery_billing_status` against the 7-row semantic mapping |
 | `completion_tokens = 1` | Cursor=1 reset isn't firing for real Anthropic; `saw_non_cursor_completion` heuristic broken |
 | `completion_tokens = 0` | `stream_chunk_builder` failed to reassemble — chunks list empty (could be `FallbackStreamWrapper` not accumulating, or Logging.streaming_chunks ref drift) |
-| `prompt_tokens < 100` | Anthropic `message_start.usage` not reaching the cost calc; check the metadata bridge |
-| `spend = 0` | Either the mock model id leaked into the row (cost map miss) or the cost calc fired before reassembly |
+| `prompt_tokens = 0` | Anthropic `message_start.usage` not reaching the cost calc; check the metadata bridge |
+| `spend = 0` | Either the model id leaked through to a cost-map miss, or the cost calc fired before reassembly |
 
 ## Tier
 
@@ -94,8 +99,10 @@ e2e/tools/run-all-cases     # runs everything; case 33 sits at the end
 - `litellm/litellm_core_utils/cancel_billing.py` — markers bridge
 - `litellm/proxy/common_request_processing.py` — `/v1/messages` catch
   + non-stream disconnect watcher (Phase 2)
-- `e2e/cases/26_cancel_billing_success_partial.md` — mock-only
-  companion that covers the same three sub-scenarios
+- `litellm/proxy/spend_tracking/spend_tracking_utils.py:_derive_delivery_billing_status`
+  — single source of truth for the orthogonal taxonomy (Phase 3)
+- `e2e/cases/26_cancel_billing_partial.md` — mock-only companion that
+  covers the same three sub-scenarios
 
 ## Tier classification
 

@@ -27,6 +27,16 @@ MASTER_KEY="${MASTER_KEY:-sk-e2e-test}"
 MOCK_CONTAINER="${MOCK_CONTAINER:-litellm-e2e-mock}"
 PROXY_CONTAINER="${PROXY_CONTAINER:-litellm-e2e}"
 
+# Preflight: this case is mock-only — it needs the mock provider's
+# X-Mock-TTFT-Ms knob to deterministically force a TTFT > shield budget.
+# In real-provider mode the request lands on a live API that won't honor
+# the header and the assertions become meaningless. SKIP rather than FAIL.
+if ! docker exec "$MOCK_CONTAINER" python3 -c \
+        "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')" 2>/dev/null; then
+    echo "SKIP: $MOCK_CONTAINER not up (run with --with-mock)"
+    exit 77
+fi
+
 # Check that the proxy was started with a short shield timeout.
 SHIELD_TIMEOUT=$(docker exec "$PROXY_CONTAINER" \
     printenv LITELLM_CANCEL_SHIELD_TIMEOUT_S 2>/dev/null || echo "")

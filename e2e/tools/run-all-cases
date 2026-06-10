@@ -509,7 +509,7 @@ case_25() {
 case_26() {
     echo "[26] cancel billing → cancelled SpendLogs row (status=success + marker)..."
     local out=/tmp/e2e_case26.out
-    bash e2e/cases/data/26_cancel_billing_success_partial.sh > "$out" 2>&1
+    bash e2e/cases/data/26_cancel_billing_partial.sh > "$out" 2>&1
     local rc=$?
     if [ "$rc" -eq 0 ]; then
         ok "26 cancel-billing: $(grep -m1 '^PASS: all' "$out")"
