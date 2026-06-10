@@ -226,11 +226,27 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
 
     @staticmethod
     def _translate_legacy_thinking_for_adaptive_model(
-        model: str, optional_params: Dict
+        model: str,
+        optional_params: Dict,
+        litellm_params: Optional[Any] = None,
     ) -> None:
         """Translate legacy ``thinking.type=enabled`` to adaptive for 4.6/4.7.
         Caller-provided ``output_config.effort`` is never overridden.
+
+        Deployment-level opt-out: when ``litellm_params`` carries
+        ``disable_adaptive_thinking_rewrite=True`` (either as a dict key or
+        a ``GenericLiteLLMParams`` attribute), the rewrite is skipped and
+        the caller's legacy thinking shape is passed through verbatim.
         """
+        if litellm_params is not None:
+            if isinstance(litellm_params, dict):
+                _disable = litellm_params.get("disable_adaptive_thinking_rewrite")
+            else:
+                _disable = getattr(
+                    litellm_params, "disable_adaptive_thinking_rewrite", None
+                )
+            if _disable:
+                return
         if not AnthropicModelInfo._is_adaptive_thinking_model(model):
             return
         thinking = optional_params.get("thinking")
@@ -283,6 +299,7 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
         self._translate_legacy_thinking_for_adaptive_model(
             model=model,
             optional_params=anthropic_messages_optional_request_params,
+            litellm_params=litellm_params,
         )
 
         # Filter out x-anthropic-billing-header from system messages
