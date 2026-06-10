@@ -249,6 +249,18 @@ class GenericLiteLLMParams(CredentialLiteLLMParams, CustomPricingLiteLLMParams):
     # See litellm/anthropic_beta_headers_manager.py for resolution semantics.
     anthropic_beta_overrides: Optional[Dict[str, Optional[str]]] = None
 
+    # Per-deployment switch: when True, the /v1/messages passthrough does
+    # not rewrite the caller's legacy
+    # ``thinking={"type":"enabled","budget_tokens":N}`` into the adaptive
+    # form (``{"type":"adaptive"}`` + ``output_config.effort``). Useful for
+    # callers that need byte-exact passthrough of the deprecated legacy
+    # thinking shape on Claude Sonnet/Opus 4.6. The flag does NOT bypass
+    # upstream Anthropic's 400 rejection of the legacy shape on Opus 4.7+
+    # -- on those models, the legacy form is rejected at the provider, not
+    # by us. See litellm/llms/anthropic/experimental_pass_through/messages
+    # /transformation.py for the gated code path.
+    disable_adaptive_thinking_rewrite: Optional[bool] = False
+
     @model_validator(mode="before")
     @classmethod
     def preprocess_input_data(cls, data: Any) -> Any:
@@ -377,6 +389,11 @@ class LiteLLMParamsTypedDict(TypedDict, total=False):
     # Per-deployment override map for Anthropic beta headers. See
     # GenericLiteLLMParams.anthropic_beta_overrides for the full description.
     anthropic_beta_overrides: Optional[Dict[str, Optional[str]]]
+
+    # See GenericLiteLLMParams.disable_adaptive_thinking_rewrite for the
+    # full description. When True, the /v1/messages passthrough preserves
+    # the caller's legacy thinking shape verbatim on Sonnet/Opus 4.6.
+    disable_adaptive_thinking_rewrite: Optional[bool]
 
 
 class DeploymentTypedDict(TypedDict, total=False):
